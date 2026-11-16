@@ -1,0 +1,881 @@
+# MASTER PROMPT: PERSONAL FINANCE MANAGEMENT & FINANCIAL DISCIPLINE SYSTEM
+
+## 1. ROLE AND OBJECTIVE
+
+Act as a Senior Product Manager, Financial System Analyst, UI/UX Designer, Software Architect, and Personal Finance Application Specialist.
+
+I want to design a comprehensive Personal Finance Management System that helps me manage my personal finances, control impulsive spending, reduce wasteful expenses, recover from financial difficulties, and build long-term financial discipline.
+
+This application must not function merely as an expense tracker. It must act as a personal financial control system that actively evaluates my financial condition, monitors spending behavior, provides strong warnings, manages financial priorities, and helps me make better financial decisions.
+
+The most important objective is:
+
+**Help me stop being financially irresponsible, reduce unnecessary spending, manage irregular income, pay off debts, build an emergency fund, save consistently, and achieve financial independence gradually.**
+
+Do not immediately jump into coding or generate an application before the product requirements, business logic, database design, and UI/UX specifications have been properly established.
+
+First understand the requirements, identify potential problems, and design the system comprehensively.
+
+---
+
+## 2. USER FINANCIAL PROFILE
+
+The application must be designed around the following real financial circumstances.
+
+### A. Regular Income: Daily Allowance
+
+- I receive approximately Rp20,000–Rp25,000 per day.
+- I usually receive this money when I attend college.
+- If I have classes but do not attend, I sometimes do not receive the allowance.
+- Therefore, this income must not be treated as guaranteed daily income.
+- The system must record income only when it is actually received.
+
+### B. Irregular Income: Freelance Website Development
+
+I also earn money through freelance website development services.
+
+- Typical project income ranges from Rp200,000 to Rp1,000,000.
+- Projects are irregular. Some months I receive projects, while other months I may receive none.
+- Payment arrangements vary:
+  - Full payment.
+  - Down payment followed by final payment.
+  - Milestone-based payments.
+  - Other arrangements depending on the client.
+- Sometimes I must pay operational expenses such as domain, hosting, API services, or other project-related costs.
+
+Important financial rule:
+
+Freelance revenue must be separated from personal money.
+
+The application must distinguish:
+1. Total project contract value.
+2. Payments actually received.
+3. Outstanding client payments.
+4. Project operational expenses.
+5. Net project profit.
+6. Personal allocation from net profit.
+7. Business funds retained for future projects.
+
+Never treat the entire contract value as money already received.
+
+Project expenses must be deducted before calculating distributable profit.
+
+### C. Current Financial Condition
+
+My current condition is:
+
+- Current available cash and account balance: Rp0.
+- Outstanding debt to a friend: approximately Rp27,000.
+- Weekly KKN contribution: Rp30,000.
+- No existing savings.
+- Food is generally provided by my family.
+- I have no other regular expenses identified yet.
+
+The application must prioritize financial recovery before aggressive saving or investing.
+
+The weekly KKN contribution must be configurable as a recurring obligation, with Rp30,000 as the initial amount.
+
+The debt and KKN contribution must be recorded separately.
+
+---
+
+## 3. MAIN FINANCIAL PROBLEMS
+
+The application must address my actual spending behavior.
+
+My biggest spending categories are:
+
+### A. Cigarettes
+
+- Cigarettes usually cost Rp20,000 or more per pack.
+- A pack can sometimes be consumed within one day.
+- Cigarettes are currently one of my largest spending categories.
+- I want to reduce cigarette-related expenses.
+- I want a dedicated cigarette spending category.
+- I want a weekly spending limit that I can determine and modify through application settings.
+
+The application must:
+- Track total cigarette expenses.
+- Track purchase frequency.
+- Track weekly spending.
+- Show remaining cigarette budget.
+- Provide warnings when approaching or exceeding the limit.
+- Calculate potential savings if cigarette spending is reduced.
+- Show spending trends over time.
+
+Do not assume that I have decided to quit smoking immediately. The initial goal is financial awareness and spending control.
+
+### B. Hanging Out and Social Activities
+
+- My spending on hanging out can reach approximately Rp50,000, including cigarettes and other expenses.
+- Sometimes spending becomes higher than expected.
+- I currently hang out approximately 2–3 times in some weeks, although the frequency varies.
+
+The application must create a separate entertainment and social spending budget.
+
+### C. Food
+
+- I eat at home and sometimes purchase food outside.
+- Food is generally provided by my family, but I still sometimes spend money on meals.
+
+Food must be categorized as an essential expense, not automatically treated as unnecessary consumption.
+
+### D. College Expenses
+
+The application must support college-related expenses, including KKN contributions and other academic needs.
+
+---
+
+## 4. CORE PRODUCT CONCEPT
+
+Build a Personal Finance Management System with an integrated Financial Discipline Engine.
+
+The system must provide:
+
+1. Income management.
+2. Expense tracking.
+3. Financial budgeting.
+4. Automatic financial condition assessment.
+5. Debt and obligation management.
+6. Savings and emergency fund management.
+7. Freelance project financial management.
+8. Spending behavior analysis.
+9. Financial warnings and recommendations.
+10. Financial performance reports.
+11. Financial goal tracking.
+
+The interface must remain simple to operate while supporting comprehensive financial management.
+
+Avoid unnecessary complexity in everyday transaction entry.
+
+---
+
+## 5. AUTOMATIC FINANCIAL MODE
+
+The application must automatically determine my financial condition.
+
+There are four proposed financial modes:
+
+### Mode 1: Recovery Mode
+
+Used when:
+- Financial obligations are not sufficiently funded.
+- Debt remains outstanding.
+- Cash flow is insufficient or unstable.
+- Essential expenses are at risk.
+- Financial conditions require recovery.
+
+System behavior:
+- Restrict discretionary spending budgets.
+- Prioritize essential expenses.
+- Prioritize debt repayment.
+- Protect money allocated for obligations.
+- Provide strong warnings for unnecessary spending.
+- Prioritize financial stability.
+
+### Mode 2: Stabilization Mode
+
+Used when:
+- Debt has been paid or is under control.
+- Financial obligations are funded.
+- Essential expenses are manageable.
+- Cash flow is becoming stable.
+
+System behavior:
+- Maintain spending discipline.
+- Start building financial reserves.
+- Continue monitoring unnecessary expenses.
+
+### Mode 3: Saving Mode
+
+Used when:
+- Financial obligations are under control.
+- Cash flow is sufficiently stable.
+- Emergency savings are being built consistently.
+
+System behavior:
+- Prioritize emergency funds.
+- Increase savings consistency.
+- Monitor spending against savings targets.
+- Protect savings from unnecessary withdrawals.
+
+### Mode 4: Growth Mode
+
+Used when:
+- Financial obligations are manageable.
+- Emergency reserves meet the configured target.
+- Financial cash flow is healthy.
+
+System behavior:
+- Support investment allocation.
+- Increase business development funds.
+- Support long-term financial goals.
+- Maintain existing spending discipline.
+
+Important:
+
+Mode transitions must be based on actual financial data, not merely account balance.
+
+The system must evaluate liquidity, obligations, debt, income stability, and protected funds.
+
+Mode transitions should be automatic, with the option to view the reasons behind each decision.
+
+---
+
+## 6. INCOME MANAGEMENT
+
+Create an income management module with separate income sources:
+
+- Daily allowance.
+- Freelance website projects.
+- Other income sources that can be added later.
+
+Every income record must include:
+- Amount.
+- Income source.
+- Date received.
+- Receiving account.
+- Description.
+- Optional notes.
+
+For freelance income, additionally support:
+- Project name.
+- Client name.
+- Contract value.
+- Payment arrangement.
+- Down payment.
+- Installment payments.
+- Final payment.
+- Outstanding payment.
+- Operational expenses.
+- Net profit.
+
+The system must distinguish received money from expected money.
+
+Expected project payments must not increase available cash before they are actually received.
+
+---
+
+## 7. INCOME ALLOCATION SYSTEM
+
+I want the application to automatically distribute incoming money according to configurable allocation rules.
+
+The allocation categories should include:
+
+1. Essential living expenses.
+2. Debt repayment.
+3. Weekly obligations.
+4. Emergency fund.
+5. Personal savings.
+6. Business development funds.
+7. Investment funds.
+8. Discretionary spending.
+
+Important rules:
+
+- The allocation percentages must be configurable.
+- Different income sources may have different allocation rules.
+- Freelance operational expenses must be deducted before allocating net profit.
+- Outstanding obligations must receive priority.
+- Emergency savings and personal savings must be protected from unnecessary spending.
+- The system must never allocate money that is not actually available.
+- The system must explain how each incoming payment is distributed.
+
+Do not impose arbitrary allocation percentages without first evaluating my actual financial situation.
+
+The application should support percentage-based and fixed-amount allocations.
+
+---
+
+## 8. FINANCIAL CONTROL AND BUDGETING
+
+The application must support three budgeting periods simultaneously:
+
+### Daily Budget
+- Daily spending limit.
+- Remaining daily allowance.
+- Daily spending summary.
+- Warnings when the limit is approached or exceeded.
+
+### Weekly Budget
+- Weekly spending limits by category.
+- Dedicated cigarette budget.
+- Entertainment and hanging-out budget.
+- Weekly obligations.
+- Weekly financial evaluation.
+
+### Monthly Budget
+- Total monthly income.
+- Total monthly expenses.
+- Monthly category budgets.
+- Savings progress.
+- Debt repayment progress.
+- Monthly financial evaluation.
+
+The system must calculate the remaining available budget dynamically.
+
+Do not calculate the daily budget simply by dividing the total monthly budget by 30.
+
+The calculation must consider:
+- Actual available money.
+- Remaining days.
+- Scheduled obligations.
+- Essential expenses.
+- Existing allocations.
+- Income uncertainty.
+
+---
+
+## 9. SAFE-TO-SPEND SYSTEM
+
+This is one of the most important features.
+
+I want the application to show how much money I can safely spend.
+
+Use a calculation based on:
+
+Safe-to-Spend =
+Liquid Balance
+- Unfunded Obligations
+- Essential Expense Allocations
+- Protected Savings
+- Other Reserved Funds
+
+The system must distinguish:
+
+1. Total account balance.
+2. Reserved money.
+3. Protected savings.
+4. Available discretionary money.
+
+Example:
+
+If I have Rp500,000 but Rp150,000 is reserved for obligations, Rp100,000 for essential expenses, and Rp50,000 for savings, my available discretionary money is not Rp500,000.
+
+The dashboard must clearly display the actual safe-to-spend amount.
+
+Prevent double-counting between account balances, transfers, and allocations.
+
+---
+
+## 10. FINANCIAL DISCIPLINE ENGINE
+
+The application must actively help me control unnecessary spending.
+
+### A. Strong Spending Warnings
+
+Provide several warning levels:
+
+- Normal: spending is within budget.
+- Warning: spending is approaching its limit.
+- Critical: spending has exceeded its budget.
+- Recovery Alert: spending threatens essential obligations or financial recovery.
+
+### B. Spending Confirmation
+
+When I attempt to record a transaction that exceeds its category budget:
+
+- Show a clear and strong warning.
+- Explain why the transaction is financially harmful.
+- Show the impact on remaining budget.
+- Ask me to provide a reason before recording the transaction.
+- Require explicit confirmation.
+
+Do not silently approve excessive discretionary spending.
+
+However, essential expenses must not be blocked by a discretionary budget restriction.
+
+The application must distinguish between warnings and actual transaction restrictions. Do not claim that the application can physically prevent real-world purchases.
+
+### C. Behavioral Analysis
+
+Analyze:
+- Repeated cigarette purchases.
+- Excessive hanging-out expenses.
+- Unnecessary food purchases.
+- Impulsive spending.
+- Spending increases after receiving freelance income.
+- Spending patterns that threaten savings goals.
+
+Provide factual, direct, and constructive recommendations.
+
+Example warning:
+
+"Your cigarette spending has exceeded your weekly budget. This expense is reducing the money available for your financial priorities. Consider reducing unnecessary purchases and protecting your remaining funds."
+
+Warnings should be firm, not insulting or humiliating.
+
+### D. No-Spend Day
+
+Include a No-Spend Day feature.
+
+The user can track days without discretionary spending.
+
+Rules:
+- Essential spending does not invalidate a No-Spend Day.
+- Discretionary spending is evaluated separately.
+- Show weekly and monthly progress.
+- Avoid rewarding users for skipping necessary food or essential needs.
+
+---
+
+## 11. DEBT AND OBLIGATION MANAGEMENT
+
+Create a dedicated debt and obligations module.
+
+Support:
+- Debt amount.
+- Creditor.
+- Debt description.
+- Due date.
+- Repayment target.
+- Partial repayments.
+- Remaining balance.
+- Repayment history.
+
+Support recurring obligations, including:
+- Weekly contributions.
+- Monthly payments.
+- College expenses.
+- Other personal obligations.
+
+Initial records:
+- Debt to a friend: Rp27,000.
+- KKN contribution: Rp30,000 per week.
+
+The system must:
+- Track outstanding debt.
+- Remind me of approaching obligations.
+- Calculate how much money must be reserved.
+- Show repayment progress.
+- Prioritize urgent obligations.
+- Avoid treating debt payments as ordinary expenses without tracking the outstanding liability correctly.
+
+---
+
+## 12. SAVINGS AND FINANCIAL GOALS
+
+I want to develop consistent saving habits.
+
+Primary priorities:
+1. Emergency fund.
+2. Personal savings.
+
+Additional goals:
+3. Buy a new smartphone.
+4. Develop my freelance website business.
+5. Start investing.
+6. Maintain enough money until the next allowance or income arrives.
+
+Each goal must support:
+- Goal name.
+- Target amount.
+- Current saved amount.
+- Target date.
+- Priority level.
+- Monthly contribution target.
+- Contribution history.
+- Progress percentage.
+
+Emergency funds and personal savings must be separately tracked.
+
+The application must recommend realistic savings targets based on actual income and expenses.
+
+Do not force unrealistic saving allocations when essential expenses or obligations are not yet funded.
+
+---
+
+## 13. ACCOUNT AND WALLET MANAGEMENT
+
+Support multiple financial accounts:
+
+- Cash.
+- Bank accounts.
+- E-wallets.
+- Savings accounts.
+- Investment accounts.
+
+Each account must support:
+- Account name.
+- Account type.
+- Opening balance.
+- Current balance.
+- Transaction history.
+- Account-specific records.
+
+Support transfers between accounts.
+
+Transfers must not be counted as income or expenses.
+
+The system must correctly calculate balances across all accounts.
+
+---
+
+## 14. TRANSACTION MANAGEMENT
+
+Transaction entry must be simple and fast.
+
+Every transaction should support:
+- Income or expense type.
+- Amount.
+- Category.
+- Account.
+- Date.
+- Description.
+- Optional notes.
+- Tags.
+- Optional attachment or receipt.
+
+Provide separate categories for:
+- Cigarettes.
+- Food.
+- Hanging out.
+- College.
+- Transportation.
+- Business operational expenses.
+- Debt repayment.
+- Savings contributions.
+- Other configurable categories.
+
+The system must support editing, deleting, and transaction history.
+
+Use appropriate validation to prevent invalid amounts and accidental duplicate records.
+
+---
+
+## 15. FINANCIAL ANALYSIS AND REPORTS
+
+Create comprehensive financial analysis.
+
+### Weekly Reports
+- Total income.
+- Total expenses.
+- Spending by category.
+- Cigarette expenses.
+- Hanging-out expenses.
+- Remaining budget.
+- Debt progress.
+- No-Spend Day progress.
+
+### Monthly Reports
+- Total income.
+- Total expenses.
+- Net cash flow.
+- Spending distribution.
+- Savings growth.
+- Debt repayment.
+- Financial mode history.
+- Spending trends.
+- Financial discipline score.
+
+### Predictions
+- Estimated end-of-month balance.
+- Estimated remaining budget.
+- Predicted spending based on actual historical behavior.
+- Potential savings from reduced discretionary spending.
+- Potential financial shortfalls.
+
+Predictions must distinguish actual data from estimates.
+
+Do not assume future daily allowances or freelance payments are guaranteed.
+
+---
+
+## 16. FINANCIAL RECOMMENDATION ENGINE
+
+Provide recommendations based on actual recorded transactions and financial conditions.
+
+Examples:
+
+- "Your cigarette expenses are increasing compared with last week."
+- "Your discretionary budget is almost exhausted."
+- "Your next weekly obligation requires Rp30,000."
+- "Your current spending pattern may leave insufficient money for the next week."
+- "Your latest freelance payment could help accelerate debt repayment."
+- "Your emergency fund has not received a contribution this month."
+
+Recommendations must explain the reason behind each suggestion.
+
+Do not produce generic advice unrelated to actual financial data.
+
+AI-based analysis may be considered as an optional feature, but core financial calculations must remain deterministic, transparent, and reliable.
+
+---
+
+## 17. USER EXPERIENCE AND INTERFACE
+
+The application must have a modern, clean, professional, and minimalist financial dashboard.
+
+Design principles:
+
+- Mobile-first interface.
+- Responsive web application.
+- Android-friendly interface.
+- Simple transaction entry.
+- Easy navigation.
+- Clear financial information hierarchy.
+- Professional charts and visualizations.
+- Strong visual emphasis on important warnings.
+- Avoid excessive decoration.
+- Avoid overcrowded dashboards.
+
+The application should be accessible for daily use.
+
+Suggested navigation:
+
+1. Dashboard.
+2. Transactions.
+3. Budgets.
+4. Goals and Savings.
+5. Financial Analysis.
+6. Settings.
+
+The dashboard should prominently show:
+- Total liquid balance.
+- Safe-to-spend amount.
+- Current financial mode.
+- Income and expenses.
+- Daily, weekly, and monthly budget status.
+- Debt and obligation status.
+- Emergency fund progress.
+- Financial warnings.
+- Recent transactions.
+
+All monetary values must use Indonesian Rupiah formatting.
+
+The application should use Indonesian as its primary language.
+
+---
+
+## 18. PLATFORM AND TECHNICAL REQUIREMENTS
+
+The intended application must support:
+
+- Android APK.
+- Responsive web application.
+- Progressive Web App (PWA).
+- Cloud-based data storage.
+- User authentication.
+- Secure data synchronization across devices.
+- Personal financial data privacy.
+
+All technology and third-party services must prioritize free plans or free tiers.
+
+The proposed technology stack may include:
+
+Frontend:
+- React.
+- TypeScript.
+- Vite.
+- Custom CSS or a suitable lightweight styling system.
+
+Backend and Database:
+- Supabase.
+- PostgreSQL.
+- Supabase Authentication.
+- Row Level Security.
+
+Web Hosting:
+- Cloudflare Pages or another suitable free-tier platform.
+
+Android:
+- Capacitor to package the web application as an Android application.
+
+Version Control:
+- Git and GitHub.
+
+These technologies are proposed preferences, not immutable decisions. Evaluate their suitability before finalizing the architecture.
+
+Never expose privileged database keys in frontend code.
+
+Security requirements:
+- Each user can only access their own financial data.
+- Implement Row Level Security.
+- Validate financial transactions.
+- Protect sensitive financial records.
+- Ensure correct ownership of accounts, transactions, and related records.
+- Handle database errors and network failures safely.
+
+Offline support should be evaluated separately. If offline transaction entry is implemented, provide a reliable synchronization and conflict-resolution strategy.
+
+Do not claim that a feature works offline unless it has actually been designed and tested.
+
+---
+
+## 19. DATABASE AND BUSINESS LOGIC REQUIREMENTS
+
+Before implementation, design a complete relational database schema.
+
+Consider entities such as:
+
+- Profiles.
+- Accounts.
+- Categories.
+- Transactions.
+- Transfers.
+- Budgets.
+- Income sources.
+- Freelance projects.
+- Project payments.
+- Project expenses.
+- Income allocations.
+- Savings goals.
+- Goal contributions.
+- Debts.
+- Debt payments.
+- Recurring obligations.
+- Recurring transactions.
+- Investment assets.
+- Investment transactions.
+- Tags.
+- Transaction tags.
+- Attachments.
+- Notifications.
+- Financial settings.
+- Financial mode history.
+- Spending evaluations.
+
+The database must support:
+- UUID identifiers.
+- Indonesian Rupiah monetary values stored as integer amounts.
+- Appropriate timestamps.
+- User ownership.
+- Referential integrity.
+- Transaction history.
+- Accurate account balance calculations.
+- Secure access policies.
+
+Avoid creating unnecessary tables without a clear business purpose.
+
+Define the relationship between each entity and explain how the financial calculations work.
+
+---
+
+## 20. IMPORTANT SYSTEM RULES
+
+The following rules are mandatory:
+
+1. Never assume daily allowance income is guaranteed.
+2. Record income only after it is actually received.
+3. Separate freelance project money from personal money.
+4. Deduct project operational expenses before distributing freelance profit.
+5. Never count expected payments as available cash.
+6. Never count account transfers as income or expenses.
+7. Protect money reserved for essential expenses and obligations.
+8. Do not treat savings as ordinary spending money.
+9. Give discretionary expenses stricter budget controls.
+10. Allow the cigarette spending limit to be configured manually.
+11. Support daily, weekly, and monthly budgets simultaneously.
+12. Automatically determine the financial mode using actual financial conditions.
+13. Prioritize financial recovery before aggressive investing.
+14. Distinguish essential expenses from discretionary spending.
+15. Do not generate unrealistic financial predictions.
+16. Do not impose arbitrary allocation percentages.
+17. Make financial calculations transparent and explainable.
+18. Keep transaction entry simple despite the application's comprehensive features.
+
+---
+
+## 21. REQUIRED DESIGN PROCESS
+
+Work through the following phases in order.
+
+### Phase 1: Product Discovery
+Understand the user's financial behavior, requirements, and priorities.
+
+### Phase 2: Product Requirements Document
+Create a complete PRD containing:
+- Product objectives.
+- User problems.
+- Target use cases.
+- Functional requirements.
+- Non-functional requirements.
+- Feature priorities.
+- Acceptance criteria.
+
+### Phase 3: Business Logic
+Define:
+- Income calculations.
+- Expense calculations.
+- Budget calculations.
+- Safe-to-spend calculations.
+- Financial mode transitions.
+- Debt repayment.
+- Savings allocations.
+- Freelance profit allocation.
+- Warning conditions.
+- Financial predictions.
+
+### Phase 4: User Flow and UI/UX
+Design:
+- Information architecture.
+- Navigation.
+- Page hierarchy.
+- User journeys.
+- Dashboard.
+- Transaction forms.
+- Budget interfaces.
+- Financial reports.
+- Settings.
+
+### Phase 5: Database and Architecture
+Create:
+- Complete ERD.
+- Database schema.
+- Table relationships.
+- RLS policies.
+- Application architecture.
+- Data synchronization strategy.
+
+### Phase 6: Technical Specification
+Document all implementation requirements and technical decisions.
+
+### Phase 7: Final Blueprint
+Produce a complete, consistent specification that can be used as the implementation reference.
+
+Do not skip phases.
+
+Do not assume that every proposed feature must be implemented immediately.
+
+Classify features into:
+- MVP: essential for the first usable version.
+- Phase 2: important enhancements.
+- Advanced: optional features that can be implemented later.
+
+---
+
+## 22. HOW TO COLLABORATE WITH ME
+
+I want an iterative design discussion.
+
+Follow these rules:
+
+- Do not blindly agree with every suggestion.
+- Evaluate whether each feature actually solves my financial problems.
+- Identify contradictions, missing requirements, and unrealistic assumptions.
+- Ask focused questions when necessary.
+- Avoid asking questions whose answers have already been provided.
+- Do not repeatedly ask for information that can be handled through configurable settings.
+- Explain financial logic in simple Indonesian.
+- Distinguish confirmed decisions from proposed ideas.
+- Maintain consistency with all previously established requirements.
+- Do not generate code before the design is sufficiently finalized.
+- Do not make unsupported assumptions about my income or expenses.
+
+Your role is to help me create an application that is genuinely useful in changing my financial behavior, not merely an application with many features.
+
+## FINAL PRODUCT VISION
+
+Build a Personal Finance Management System that acts as my personal financial control center.
+
+It must help me answer five important questions every day:
+
+1. How much money do I actually have?
+2. How much money can I safely spend?
+3. Which expenses are damaging my financial condition?
+4. What should I prioritize with my next income?
+5. Am I becoming more financially disciplined?
+
+The ultimate goal is not simply to record money.
+
+**The ultimate goal is to help me become financially responsible, control unnecessary spending, pay off debts, build emergency savings, grow my freelance business, and develop sustainable financial habits.**

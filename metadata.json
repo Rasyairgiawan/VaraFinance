@@ -1,0 +1,6 @@
+{
+  "name": "KendaliUang — Kontrol Keuangan & Disiplin Finansial",
+  "description": "Sistem manajemen keuangan pribadi, kontrol pengeluaran rokok & nongkrong, proyek freelance, kewajiban KKN, pelunasan utang, dan perhitungan Dana Aman Dibelanjakan.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
