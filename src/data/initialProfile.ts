@@ -9,9 +9,83 @@ export const DEFAULT_PROJECTION_ASSUMPTIONS: ProjectionAssumptions = {
   includeScheduledExpenses: true,
 };
 
+export const SYSTEM_ACCOUNT_KEY_MAP: Readonly<Record<string, string>> = {
+  'acc-cash': 'cash',
+  'acc-bank': 'bank_personal',
+  'acc-ewallet': 'ewallet',
+  'acc-savings': 'savings',
+  'acc-business': 'business',
+  'acc-invest': 'investment',
+};
+
+export const SYSTEM_CATEGORY_KEY_MAP: Readonly<Record<string, string>> = {
+  'cat-income-allowance': 'income_allowance',
+  'cat-income-freelance': 'income_freelance',
+  'cat-income-other': 'income_other',
+  'cat-cig': 'cigarette',
+  'cat-hangout': 'hangout',
+  'cat-food': 'food',
+  'cat-college': 'college_obligation',
+  'cat-transport': 'transport',
+  'cat-debt': 'debt_payment',
+  'cat-biz-ops': 'business_ops',
+  'cat-other-exp': 'other_expense',
+  'cat-income-salary': 'income_salary',
+  'cat-income-business': 'income_business',
+  'cat-income-passive': 'income_passive',
+  'cat-housing': 'housing',
+  'cat-utilities': 'utilities',
+  'cat-installment': 'installment',
+  'cat-family': 'family',
+  'cat-tax-insurance': 'tax_insurance',
+};
+
+export const SYSTEM_DEBT_KEY_MAP: Readonly<Record<string, string>> = {
+  'debt-friend-initial': 'friend_initial',
+};
+
+export const SYSTEM_OBLIGATION_KEY_MAP: Readonly<Record<string, string>> = {
+  'ob-kkn-weekly': 'kkn_weekly',
+};
+
+export const SYSTEM_GOAL_KEY_MAP: Readonly<Record<string, string>> = {
+  'goal-emergency': 'emergency',
+  'goal-personal': 'personal',
+  'goal-smartphone': 'smartphone',
+  'goal-business': 'business',
+  'goal-invest': 'investment',
+};
+
+export const SYSTEM_KEY_ALLOWLISTS = {
+  account: new Set(Object.values(SYSTEM_ACCOUNT_KEY_MAP)),
+  category: new Set(Object.values(SYSTEM_CATEGORY_KEY_MAP)),
+  debt: new Set(Object.values(SYSTEM_DEBT_KEY_MAP)),
+  obligation: new Set(Object.values(SYSTEM_OBLIGATION_KEY_MAP)),
+  goal: new Set(Object.values(SYSTEM_GOAL_KEY_MAP)),
+} as const;
+
+export function getSystemKeyForLegacyId(
+  entityType: keyof typeof SYSTEM_KEY_ALLOWLISTS,
+  legacyId: string
+): string | undefined {
+  switch (entityType) {
+    case 'account':
+      return SYSTEM_ACCOUNT_KEY_MAP[legacyId];
+    case 'category':
+      return SYSTEM_CATEGORY_KEY_MAP[legacyId];
+    case 'debt':
+      return SYSTEM_DEBT_KEY_MAP[legacyId];
+    case 'obligation':
+      return SYSTEM_OBLIGATION_KEY_MAP[legacyId];
+    case 'goal':
+      return SYSTEM_GOAL_KEY_MAP[legacyId];
+  }
+}
+
 export const GENERAL_CATEGORY_PRESETS: Array<Omit<Category, 'isSystem'>> = [
   {
     id: 'cat-income-salary',
+    systemKey: SYSTEM_CATEGORY_KEY_MAP['cat-income-salary'],
     name: 'Gaji Bulanan',
     type: 'income',
     classification: 'income',
@@ -20,6 +94,7 @@ export const GENERAL_CATEGORY_PRESETS: Array<Omit<Category, 'isSystem'>> = [
   },
   {
     id: 'cat-income-business',
+    systemKey: SYSTEM_CATEGORY_KEY_MAP['cat-income-business'],
     name: 'Pendapatan Bisnis',
     type: 'income',
     classification: 'income',
@@ -28,6 +103,7 @@ export const GENERAL_CATEGORY_PRESETS: Array<Omit<Category, 'isSystem'>> = [
   },
   {
     id: 'cat-income-passive',
+    systemKey: SYSTEM_CATEGORY_KEY_MAP['cat-income-passive'],
     name: 'Pendapatan Pasif / Dividen',
     type: 'income',
     classification: 'income',
@@ -36,6 +112,7 @@ export const GENERAL_CATEGORY_PRESETS: Array<Omit<Category, 'isSystem'>> = [
   },
   {
     id: 'cat-housing',
+    systemKey: SYSTEM_CATEGORY_KEY_MAP['cat-housing'],
     name: 'Tempat Tinggal / Kos / Sewa',
     type: 'expense',
     classification: 'essential',
@@ -44,6 +121,7 @@ export const GENERAL_CATEGORY_PRESETS: Array<Omit<Category, 'isSystem'>> = [
   },
   {
     id: 'cat-utilities',
+    systemKey: SYSTEM_CATEGORY_KEY_MAP['cat-utilities'],
     name: 'Tagihan Listrik, Air & Internet',
     type: 'expense',
     classification: 'obligation',
@@ -52,6 +130,7 @@ export const GENERAL_CATEGORY_PRESETS: Array<Omit<Category, 'isSystem'>> = [
   },
   {
     id: 'cat-installment',
+    systemKey: SYSTEM_CATEGORY_KEY_MAP['cat-installment'],
     name: 'Cicilan Rutin',
     type: 'expense',
     classification: 'obligation',
@@ -60,6 +139,7 @@ export const GENERAL_CATEGORY_PRESETS: Array<Omit<Category, 'isSystem'>> = [
   },
   {
     id: 'cat-family',
+    systemKey: SYSTEM_CATEGORY_KEY_MAP['cat-family'],
     name: 'Kebutuhan Keluarga',
     type: 'expense',
     classification: 'essential',
@@ -68,6 +148,7 @@ export const GENERAL_CATEGORY_PRESETS: Array<Omit<Category, 'isSystem'>> = [
   },
   {
     id: 'cat-tax-insurance',
+    systemKey: SYSTEM_CATEGORY_KEY_MAP['cat-tax-insurance'],
     name: 'Pajak & Asuransi',
     type: 'expense',
     classification: 'obligation',
@@ -122,6 +203,7 @@ export function createInitialFinanceState(nowISO: string = todayISO()): FinanceS
     accounts: [
       {
         id: 'acc-cash',
+        systemKey: SYSTEM_ACCOUNT_KEY_MAP['acc-cash'],
         name: 'Dompet Tunai',
         accountType: 'cash',
         openingBalance: 0,
@@ -132,6 +214,7 @@ export function createInitialFinanceState(nowISO: string = todayISO()): FinanceS
       },
       {
         id: 'acc-bank',
+        systemKey: SYSTEM_ACCOUNT_KEY_MAP['acc-bank'],
         name: 'Rekening Bank Pribadi',
         accountType: 'bank',
         openingBalance: 0,
@@ -142,6 +225,7 @@ export function createInitialFinanceState(nowISO: string = todayISO()): FinanceS
       },
       {
         id: 'acc-ewallet',
+        systemKey: SYSTEM_ACCOUNT_KEY_MAP['acc-ewallet'],
         name: 'E-Wallet',
         accountType: 'ewallet',
         openingBalance: 0,
@@ -152,6 +236,7 @@ export function createInitialFinanceState(nowISO: string = todayISO()): FinanceS
       },
       {
         id: 'acc-savings',
+        systemKey: SYSTEM_ACCOUNT_KEY_MAP['acc-savings'],
         name: 'Tabungan Terlindungi',
         accountType: 'savings',
         openingBalance: 0,
@@ -162,6 +247,7 @@ export function createInitialFinanceState(nowISO: string = todayISO()): FinanceS
       },
       {
         id: 'acc-business',
+        systemKey: SYSTEM_ACCOUNT_KEY_MAP['acc-business'],
         name: 'Kas Bisnis Freelance',
         accountType: 'bank',
         openingBalance: 0,
@@ -172,6 +258,7 @@ export function createInitialFinanceState(nowISO: string = todayISO()): FinanceS
       },
       {
         id: 'acc-invest',
+        systemKey: SYSTEM_ACCOUNT_KEY_MAP['acc-invest'],
         name: 'Akun Investasi',
         accountType: 'investment',
         openingBalance: 0,
@@ -184,6 +271,7 @@ export function createInitialFinanceState(nowISO: string = todayISO()): FinanceS
     categories: [
       {
         id: 'cat-income-allowance',
+        systemKey: SYSTEM_CATEGORY_KEY_MAP['cat-income-allowance'],
         name: 'Uang Saku Kuliah',
         type: 'income',
         classification: 'income',
@@ -193,6 +281,7 @@ export function createInitialFinanceState(nowISO: string = todayISO()): FinanceS
       },
       {
         id: 'cat-income-freelance',
+        systemKey: SYSTEM_CATEGORY_KEY_MAP['cat-income-freelance'],
         name: 'Proyek Freelance Web',
         type: 'income',
         classification: 'income',
@@ -202,6 +291,7 @@ export function createInitialFinanceState(nowISO: string = todayISO()): FinanceS
       },
       {
         id: 'cat-income-other',
+        systemKey: SYSTEM_CATEGORY_KEY_MAP['cat-income-other'],
         name: 'Pemasukan Lainnya',
         type: 'income',
         classification: 'income',
@@ -211,6 +301,7 @@ export function createInitialFinanceState(nowISO: string = todayISO()): FinanceS
       },
       {
         id: 'cat-cig',
+        systemKey: SYSTEM_CATEGORY_KEY_MAP['cat-cig'],
         name: 'Rokok',
         type: 'expense',
         classification: 'discretionary',
@@ -220,6 +311,7 @@ export function createInitialFinanceState(nowISO: string = todayISO()): FinanceS
       },
       {
         id: 'cat-hangout',
+        systemKey: SYSTEM_CATEGORY_KEY_MAP['cat-hangout'],
         name: 'Nongkrong & Sosial',
         type: 'expense',
         classification: 'discretionary',
@@ -229,6 +321,7 @@ export function createInitialFinanceState(nowISO: string = todayISO()): FinanceS
       },
       {
         id: 'cat-food',
+        systemKey: SYSTEM_CATEGORY_KEY_MAP['cat-food'],
         name: 'Makan & Minum',
         type: 'expense',
         classification: 'essential',
@@ -238,6 +331,7 @@ export function createInitialFinanceState(nowISO: string = todayISO()): FinanceS
       },
       {
         id: 'cat-college',
+        systemKey: SYSTEM_CATEGORY_KEY_MAP['cat-college'],
         name: 'Kuliah & KKN / Kewajiban',
         type: 'expense',
         classification: 'obligation',
@@ -247,6 +341,7 @@ export function createInitialFinanceState(nowISO: string = todayISO()): FinanceS
       },
       {
         id: 'cat-transport',
+        systemKey: SYSTEM_CATEGORY_KEY_MAP['cat-transport'],
         name: 'Transportasi',
         type: 'expense',
         classification: 'essential',
@@ -256,6 +351,7 @@ export function createInitialFinanceState(nowISO: string = todayISO()): FinanceS
       },
       {
         id: 'cat-debt',
+        systemKey: SYSTEM_CATEGORY_KEY_MAP['cat-debt'],
         name: 'Bayar Utang',
         type: 'expense',
         classification: 'debt',
@@ -265,6 +361,7 @@ export function createInitialFinanceState(nowISO: string = todayISO()): FinanceS
       },
       {
         id: 'cat-biz-ops',
+        systemKey: SYSTEM_CATEGORY_KEY_MAP['cat-biz-ops'],
         name: 'Operasional Bisnis & Freelance',
         type: 'expense',
         classification: 'business',
@@ -274,6 +371,7 @@ export function createInitialFinanceState(nowISO: string = todayISO()): FinanceS
       },
       {
         id: 'cat-other-exp',
+        systemKey: SYSTEM_CATEGORY_KEY_MAP['cat-other-exp'],
         name: 'Jajan & Pengeluaran Lainnya',
         type: 'expense',
         classification: 'discretionary',
@@ -290,6 +388,7 @@ export function createInitialFinanceState(nowISO: string = todayISO()): FinanceS
     debts: [
       {
         id: 'debt-friend-initial',
+        systemKey: SYSTEM_DEBT_KEY_MAP['debt-friend-initial'],
         direction: 'payable',
         creditor: 'Teman',
         description: 'Utang pribadi ke teman (kondisi awal)',
@@ -305,6 +404,7 @@ export function createInitialFinanceState(nowISO: string = todayISO()): FinanceS
     obligations: [
       {
         id: 'ob-kkn-weekly',
+        systemKey: SYSTEM_OBLIGATION_KEY_MAP['ob-kkn-weekly'],
         kind: 'obligation',
         name: 'Iuran KKN Mingguan',
         category: 'Kuliah & KKN / Kewajiban',
@@ -326,6 +426,7 @@ export function createInitialFinanceState(nowISO: string = todayISO()): FinanceS
     goals: [
       {
         id: 'goal-emergency',
+        systemKey: SYSTEM_GOAL_KEY_MAP['goal-emergency'],
         name: 'Dana Darurat Dasar',
         goalType: 'emergency',
         targetAmount: 500000,
@@ -338,6 +439,7 @@ export function createInitialFinanceState(nowISO: string = todayISO()): FinanceS
       },
       {
         id: 'goal-personal',
+        systemKey: SYSTEM_GOAL_KEY_MAP['goal-personal'],
         name: 'Tabungan Pribadi',
         goalType: 'personal',
         targetAmount: 300000,
@@ -350,6 +452,7 @@ export function createInitialFinanceState(nowISO: string = todayISO()): FinanceS
       },
       {
         id: 'goal-smartphone',
+        systemKey: SYSTEM_GOAL_KEY_MAP['goal-smartphone'],
         name: 'Beli Smartphone Baru',
         goalType: 'smartphone',
         targetAmount: 2500000,
@@ -362,6 +465,7 @@ export function createInitialFinanceState(nowISO: string = todayISO()): FinanceS
       },
       {
         id: 'goal-business',
+        systemKey: SYSTEM_GOAL_KEY_MAP['goal-business'],
         name: 'Pengembangan Bisnis Website',
         goalType: 'business',
         targetAmount: 1000000,
@@ -374,6 +478,7 @@ export function createInitialFinanceState(nowISO: string = todayISO()): FinanceS
       },
       {
         id: 'goal-invest',
+        systemKey: SYSTEM_GOAL_KEY_MAP['goal-invest'],
         name: 'Mulai Investasi Pertama',
         goalType: 'investment',
         targetAmount: 500000,

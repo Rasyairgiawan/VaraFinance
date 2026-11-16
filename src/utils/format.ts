@@ -70,3 +70,17 @@ export function generateId(): string {
     return v.toString(16);
   });
 }
+
+export const STRICT_UUID_V4_REGEX =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+
+export const GENERIC_UUID_REGEX =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+
+export function isStrictUUIDv4(value: unknown): value is string {
+  return typeof value === 'string' && STRICT_UUID_V4_REGEX.test(value);
+}
+
+export function isValidUUID(value: unknown): value is string {
+  return typeof value === 'string' && GENERIC_UUID_REGEX.test(value);
+}

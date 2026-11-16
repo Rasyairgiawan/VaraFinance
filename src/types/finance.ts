@@ -126,6 +126,7 @@ export interface PinGuardState {
 
 export interface Account {
   id: string;
+  systemKey?: string;
   name: string;
   accountType: AccountType;
   openingBalance: number;
@@ -135,10 +136,14 @@ export interface Account {
   archivedAt?: string;
   closedAt?: string;
   createdAt: string;
+  updatedAt?: string;
+  deletedAt?: string;
+  revision?: number;
 }
 
 export interface Category {
   id: string;
+  systemKey?: string;
   name: string;
   type: 'income' | 'expense';
   classification: CategoryClassification;
@@ -146,6 +151,9 @@ export interface Category {
   monthlyLimit: number;
   isSystem: boolean;
   isArchived?: boolean;
+  updatedAt?: string;
+  deletedAt?: string;
+  revision?: number;
 }
 
 export interface Transaction {
@@ -168,6 +176,9 @@ export interface Transaction {
   voidedAt?: string;
   voidReason?: string;
   createdAt: string;
+  updatedAt?: string;
+  deletedAt?: string;
+  revision?: number;
 }
 
 export interface AccountTransfer {
@@ -178,6 +189,9 @@ export interface AccountTransfer {
   date: string;
   notes?: string;
   createdAt: string;
+  updatedAt?: string;
+  deletedAt?: string;
+  revision?: number;
 }
 
 export interface FreelanceProject {
@@ -192,6 +206,9 @@ export interface FreelanceProject {
   notes?: string;
   isArchived?: boolean;
   createdAt: string;
+  updatedAt?: string;
+  deletedAt?: string;
+  revision?: number;
 }
 
 export interface ProjectPayment {
@@ -205,7 +222,13 @@ export interface ProjectPayment {
   accountId?: string;
   transactionId?: string;
   notes?: string;
+  isVoided?: boolean;
+  voidedAt?: string;
+  voidReason?: string;
   createdAt: string;
+  updatedAt?: string;
+  deletedAt?: string;
+  revision?: number;
 }
 
 export interface ProjectExpense {
@@ -216,11 +239,18 @@ export interface ProjectExpense {
   date: string;
   accountId: string;
   transactionId?: string;
+  isVoided?: boolean;
+  voidedAt?: string;
+  voidReason?: string;
   createdAt: string;
+  updatedAt?: string;
+  deletedAt?: string;
+  revision?: number;
 }
 
 export interface Debt {
   id: string;
+  systemKey?: string;
   direction?: DebtDirection; // 'payable' (utang) | 'receivable' (piutang), default 'payable'
   creditor: string;
   description: string;
@@ -230,6 +260,9 @@ export interface Debt {
   priority: number;
   status: 'active' | 'paid';
   createdAt: string;
+  updatedAt?: string;
+  deletedAt?: string;
+  revision?: number;
 }
 
 export interface DebtPayment {
@@ -240,11 +273,18 @@ export interface DebtPayment {
   accountId: string;
   transactionId?: string;
   notes?: string;
+  isVoided?: boolean;
+  voidedAt?: string;
+  voidReason?: string;
   createdAt: string;
+  updatedAt?: string;
+  deletedAt?: string;
+  revision?: number;
 }
 
 export interface RecurringObligation {
   id: string;
+  systemKey?: string;
   kind?: ObligationKind; // 'obligation' | 'scheduled_expense', default 'obligation'
   name: string;
   category: string;
@@ -262,6 +302,9 @@ export interface RecurringObligation {
   isActive: boolean;
   isArchived?: boolean;
   createdAt: string;
+  updatedAt?: string;
+  deletedAt?: string;
+  revision?: number;
 }
 
 export interface ObligationLog {
@@ -273,13 +316,20 @@ export interface ObligationLog {
   accountId?: string;
   transactionId?: string;
   notes?: string;
+  isVoided?: boolean;
+  voidedAt?: string;
+  voidReason?: string;
   createdAt: string;
+  updatedAt?: string;
+  deletedAt?: string;
+  revision?: number;
 }
 
 export type GoalType = 'emergency' | 'personal' | 'smartphone' | 'business' | 'investment' | 'buffer';
 
 export interface SavingsGoal {
   id: string;
+  systemKey?: string;
   name: string;
   goalType: GoalType;
   targetAmount: number;
@@ -291,6 +341,9 @@ export interface SavingsGoal {
   isProtected: boolean;
   isArchived?: boolean;
   createdAt: string;
+  updatedAt?: string;
+  deletedAt?: string;
+  revision?: number;
 }
 
 export interface GoalContribution {
@@ -302,7 +355,13 @@ export interface GoalContribution {
   toAccountId?: string;
   transferId?: string;
   notes?: string;
+  isVoided?: boolean;
+  voidedAt?: string;
+  voidReason?: string;
   createdAt: string;
+  updatedAt?: string;
+  deletedAt?: string;
+  revision?: number;
 }
 
 export interface NoSpendConfirmation {
@@ -310,6 +369,9 @@ export interface NoSpendConfirmation {
   status: 'confirmed' | 'revoked';
   note?: string;
   confirmedAt: string;
+  updatedAt?: string;
+  deletedAt?: string;
+  revision?: number;
 }
 
 export type ChangeEntityType =
@@ -344,6 +406,7 @@ export interface SyncMeta {
 }
 
 export interface FinanceState {
+  schemaVersion?: number;
   settings: UserFinancialSettings;
   accounts: Account[];
   categories: Category[];
