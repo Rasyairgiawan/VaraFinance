@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useState } from 'react';
-import { AlertTriangle, ArrowLeftRight, Calculator, CheckCircle2, ShieldAlert, X } from 'lucide-react';
+import { AlertTriangle, ArrowLeftRight, Calculator, CheckCircle2, Lock, ShieldAlert, X } from 'lucide-react';
 import {
   computeAllocationBreakdown,
   evaluateDisciplineForExpense,
@@ -9,6 +9,8 @@ import {
 import {
   addTransactionAction,
   addTransferAction,
+  findDefaultActiveDebt,
+  getTransactionLinkInfo,
   payObligationAction,
   repayDebtAction,
   updateTransactionAction,
@@ -126,9 +128,7 @@ export const QuickTransactionModal: React.FC<QuickTransactionModalProps> = ({
       setTab('expense');
       setCategoryId('cat-debt');
       setAccountId(defaultAcc);
-      const firstDebt = state.debts.find(
-        (d) => d.status === 'active' && (d.direction ?? 'payable') === 'payable'
-      );
+      const firstDebt = findDefaultActiveDebt(state.debts, 'payable');
       setAmount(firstDebt ? String(firstDebt.remainingAmount) : '27000');
       setDescription(firstDebt ? `Bayar utang ke ${firstDebt.creditor}` : 'Bayar utang');
     } else if (preset === 'transfer') {
@@ -175,6 +175,13 @@ export const QuickTransactionModal: React.FC<QuickTransactionModalProps> = ({
         : state.settings.allowanceAllocationRules;
     return computeAllocationBreakdown(numericAmount, rules, incomeSource);
   }, [tab, numericAmount, incomeSource, state.settings]);
+
+  const editingLinkInfo = useMemo(
+    () => (editingTx ? getTransactionLinkInfo(state, editingTx.id) : null),
+    [editingTx, state]
+  );
+  const isEditingLocked = Boolean(editingTx && editingLinkInfo?.isLinked);
+  const isNonCashEditing = Boolean(editingTx && editingTx.affectsAccountBalance === false);
 
   if (!isOpen) return null;
 
@@ -258,9 +265,7 @@ export const QuickTransactionModal: React.FC<QuickTransactionModalProps> = ({
       }
 
       if (tab === 'expense' && preset === 'debt') {
-        const activeDebt = state.debts.find(
-          (d) => d.status === 'active' && (d.direction ?? 'payable') === 'payable'
-        );
+        const activeDebt = findDefaultActiveDebt(state.debts, 'payable');
         if (activeDebt && categoryId === 'cat-debt') {
           const next = repayDebtAction(state, {
             debtId: activeDebt.id,
@@ -377,6 +382,16 @@ export const QuickTransactionModal: React.FC<QuickTransactionModalProps> = ({
             </div>
           )}
 
+          {isEditingLocked && editingLinkInfo && (
+            <div className="rounded-xl border border-amber-200 bg-amber-50 p-3 text-xs text-amber-950 flex items-start gap-2.5">
+              <Lock className="w-4 h-4 text-amber-700 shrink-0 mt-0.5" />
+              <div className="space-y-1">
+                <p className="font-bold">Transaksi Terikat Relasi (Nominal, Akun, Kategori &amp; Tanggal Dikunci)</p>
+                <p>{editingLinkInfo.reason}</p>
+              </div>
+            </div>
+          )}
+
           <div>
             <label className="block text-xs font-semibold text-slate-700 mb-1.5">
               Nominal (Rupiah)
@@ -389,16 +404,17 @@ export const QuickTransactionModal: React.FC<QuickTransactionModalProps> = ({
                 type="number"
                 min={1}
                 required
+                disabled={isEditingLocked}
                 value={amount}
                 onChange={(e) => {
                   setAmount(e.target.value);
                   setShowGate(false);
                 }}
                 placeholder="0"
-                className="w-full rounded-xl border border-slate-300 pl-10 pr-4 py-3 text-lg font-bold font-mono-num text-slate-900 focus:border-[#0C8FC5] focus:outline-none"
+                className="w-full rounded-xl border border-slate-300 pl-10 pr-4 py-3 text-lg font-bold font-mono-num text-slate-900 focus:border-[#0C8FC5] focus:outline-none disabled:bg-slate-100 disabled:text-slate-500"
               />
             </div>
-            {tab === 'expense' && (
+            {tab === 'expense' && !isEditingLocked && (
               <div className="mt-2 flex flex-wrap gap-1.5">
                 {[10000, 15000, 20000, 25000, 30000, 50000].map((val) => (
                   <button
@@ -425,11 +441,12 @@ export const QuickTransactionModal: React.FC<QuickTransactionModalProps> = ({
                 </label>
                 <select
                   value={categoryId}
+                  disabled={isEditingLocked}
                   onChange={(e) => {
                     setCategoryId(e.target.value);
                     setShowGate(false);
                   }}
-                  className="w-full rounded-xl border border-slate-300 bg-white px-3 py-2.5 text-sm focus:border-[#0C8FC5] focus:outline-none"
+                  className="w-full rounded-xl border border-slate-300 bg-white px-3 py-2.5 text-sm focus:border-[#0C8FC5] focus:outline-none disabled:bg-slate-100 disabled:text-slate-500"
                 >
                   {(tab === 'expense' ? expenseCategories : incomeCategories).map((c) => (
                     <option key={c.id} value={c.id}>
@@ -440,19 +457,33 @@ export const QuickTransactionModal: React.FC<QuickTransactionModalProps> = ({
               </div>
               <div>
                 <label className="block text-xs font-semibold text-slate-700 mb-1.5">
-                  {tab === 'income' ? 'Masuk ke Akun' : 'Sumber Akun'}
+                  {isNonCashEditing
+                    ? 'Sumber Pencatatan'
+                    : tab === 'income'
+                    ? 'Masuk ke Akun'
+                    : 'Sumber Akun'}
                 </label>
-                <select
-                  value={accountId}
-                  onChange={(e) => setAccountId(e.target.value)}
-                  className="w-full rounded-xl border border-slate-300 bg-white px-3 py-2.5 text-sm focus:border-[#0C8FC5] focus:outline-none"
-                >
-                  {activeAccounts.map((a) => (
-                    <option key={a.id} value={a.id}>
-                      {a.name} ({formatIDR(a.currentBalance)})
-                    </option>
-                  ))}
-                </select>
+                {isNonCashEditing ? (
+                  <input
+                    type="text"
+                    disabled
+                    value="Non-Kas (Utang)"
+                    className="w-full rounded-xl border border-slate-300 bg-slate-100 px-3 py-2.5 text-sm text-slate-600"
+                  />
+                ) : (
+                  <select
+                    value={accountId}
+                    disabled={isEditingLocked}
+                    onChange={(e) => setAccountId(e.target.value)}
+                    className="w-full rounded-xl border border-slate-300 bg-white px-3 py-2.5 text-sm focus:border-[#0C8FC5] focus:outline-none disabled:bg-slate-100 disabled:text-slate-500"
+                  >
+                    {activeAccounts.map((a) => (
+                      <option key={a.id} value={a.id}>
+                        {a.name} ({formatIDR(a.currentBalance)})
+                      </option>
+                    ))}
+                  </select>
+                )}
               </div>
             </div>
           ) : (
@@ -520,9 +551,10 @@ export const QuickTransactionModal: React.FC<QuickTransactionModalProps> = ({
               <input
                 type="date"
                 value={date}
+                disabled={isEditingLocked}
                 onChange={(e) => setDate(e.target.value)}
                 required
-                className="w-full rounded-xl border border-slate-300 px-3 py-2.5 text-sm focus:border-[#0C8FC5] focus:outline-none"
+                className="w-full rounded-xl border border-slate-300 px-3 py-2.5 text-sm focus:border-[#0C8FC5] focus:outline-none disabled:bg-slate-100 disabled:text-slate-500"
               />
             </div>
             <div>

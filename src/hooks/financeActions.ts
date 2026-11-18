@@ -10,16 +10,22 @@ import {
   CustomReminder,
   Debt,
   DebtDirection,
+  DebtPayment,
+  DebtReceiptKind,
   FinanceState,
   FreelanceProject,
   GoalType,
   IncomeSourceType,
+  NoSpendConfirmation,
   ObligationDurationType,
   ObligationFrequency,
   ObligationKind,
+  ObligationLog,
   ObligationStatus,
+  ProjectExpense,
   ProjectPayment,
   ProjectionAssumptions,
+  ReceivableKind,
   RecurringObligation,
   ReminderSettings,
   SavingsGoal,
@@ -165,41 +171,313 @@ export function addTransactionAction(
   };
 }
 
+export type TransactionLinkType =
+  | 'none'
+  | 'debt_origin'
+  | 'debt_payment'
+  | 'debt_orphan'
+  | 'project_payment'
+  | 'project_expense'
+  | 'obligation_log'
+  | 'reconciliation';
+
+export interface TransactionLinkInfo {
+  isLinked: boolean;
+  linkType: TransactionLinkType;
+  linkedDebt?: Debt;
+  linkedDebtPayment?: DebtPayment;
+  linkedProjectPayment?: ProjectPayment;
+  linkedProjectExpense?: ProjectExpense;
+  linkedObligationLog?: ObligationLog;
+  canDirectVoid: boolean;
+  canEditMetadataOnly: boolean;
+  reason?: string;
+}
+
+export function getTransactionLinkInfo(
+  state: FinanceState,
+  txId: string
+): TransactionLinkInfo {
+  const tx = state.transactions.find((t) => t.id === txId);
+  const linkedDebtPayment = state.debtPayments.find((dp) => dp.transactionId === txId);
+  if (linkedDebtPayment) {
+    const parentDebt = state.debts.find((d) => d.id === linkedDebtPayment.debtId);
+    const label = parentDebt?.direction === 'receivable' ? 'penerimaan piutang' : 'pembayaran utang';
+    return {
+      isLinked: true,
+      linkType: 'debt_payment',
+      linkedDebt: parentDebt,
+      linkedDebtPayment,
+      canDirectVoid: true,
+      canEditMetadataOnly: true,
+      reason: `Transaksi ini terhubung dengan ${label} (${parentDebt?.creditor ?? linkedDebtPayment.debtId}). Nominal, akun, dan kategori dikunci; gunakan Void untuk membatalkan pembayaran dan memulihkan saldo utang/piutang.`,
+    };
+  }
+
+  const linkedDebtByOrigin = state.debts.find(
+    (d) =>
+      d.transactionId === txId ||
+      (tx?.debtId &&
+        d.id === tx.debtId &&
+        (tx.transactionNature === 'debt_receipt' ||
+          tx.transactionNature === 'debt_direct_expense' ||
+          tx.transactionNature === 'loan_disbursement'))
+  );
+  if (linkedDebtByOrigin) {
+    const hasActivePayments = state.debtPayments.some(
+      (dp) => dp.debtId === linkedDebtByOrigin.id && !dp.isVoided
+    );
+    return {
+      isLinked: true,
+      linkType: 'debt_origin',
+      linkedDebt: linkedDebtByOrigin,
+      canDirectVoid: !hasActivePayments,
+      canEditMetadataOnly: true,
+      reason: hasActivePayments
+        ? `Transaksi asal ${linkedDebtByOrigin.direction === 'receivable' ? 'piutang' : 'utang'} (${linkedDebtByOrigin.creditor}) sudah memiliki pembayaran aktif. Batalkan pembayaran terlebih dahulu sebelum membatalkan transaksi ini.`
+        : `Transaksi ini terhubung langsung dengan catatan ${linkedDebtByOrigin.direction === 'receivable' ? 'piutang' : 'utang'} (${linkedDebtByOrigin.creditor}). Nominal, akun, dan kategori dikunci; gunakan Void untuk membatalkan transaksi dan catatan terkait secara atomik.`,
+    };
+  }
+
+  if (tx?.debtId) {
+    const parentDebt = state.debts.find((d) => d.id === tx.debtId);
+    return {
+      isLinked: true,
+      linkType: 'debt_orphan',
+      linkedDebt: parentDebt,
+      canDirectVoid: false,
+      canEditMetadataOnly: true,
+      reason:
+        'Transaksi ini memiliki referensi utang/piutang tanpa entri DebtPayment yang utuh dan tidak dapat diubah atau di-void langsung.',
+    };
+  }
+
+  const linkedProjectPayment = state.projectPayments.find((pp) => pp.transactionId === txId);
+  if (linkedProjectPayment) {
+    return {
+      isLinked: true,
+      linkType: 'project_payment',
+      linkedProjectPayment,
+      canDirectVoid: false,
+      canEditMetadataOnly: true,
+      reason:
+        'Transaksi ini terhubung dengan penerimaan proyek (ProjectPayment). Nominal, akun, dan kategori dikunci serta tidak dapat dihapus/di-void langsung agar ringkasan proyek tetap konsisten.',
+    };
+  }
+
+  const linkedProjectExpense = state.projectExpenses.find((pe) => pe.transactionId === txId);
+  if (linkedProjectExpense) {
+    return {
+      isLinked: true,
+      linkType: 'project_expense',
+      linkedProjectExpense,
+      canDirectVoid: false,
+      canEditMetadataOnly: true,
+      reason:
+        'Transaksi ini terhubung dengan biaya operasional proyek (ProjectExpense). Nominal, akun, dan kategori dikunci serta tidak dapat dihapus/di-void langsung.',
+    };
+  }
+
+  const linkedObligationLog = state.obligationLogs.find((ol) => ol.transactionId === txId);
+  if (linkedObligationLog) {
+    return {
+      isLinked: true,
+      linkType: 'obligation_log',
+      linkedObligationLog,
+      canDirectVoid: false,
+      canEditMetadataOnly: true,
+      reason:
+        'Transaksi ini terhubung dengan pembayaran kewajiban rutin (ObligationLog). Nominal, akun, dan kategori dikunci serta tidak dapat dihapus/di-void langsung karena memengaruhi jadwal jatuh tempo dan cadangan kewajiban.',
+    };
+  }
+
+  if (tx?.transactionNature === 'reconciliation' || tx?.tags?.includes('rekonsiliasi')) {
+    return {
+      isLinked: true,
+      linkType: 'reconciliation',
+      canDirectVoid: true,
+      canEditMetadataOnly: true,
+      reason:
+        'Transaksi rekonsiliasi saldo tidak boleh diubah nominal, akun, atau kategorinya secara langsung.',
+    };
+  }
+
+  return {
+    isLinked: false,
+    linkType: 'none',
+    canDirectVoid: true,
+    canEditMetadataOnly: false,
+  };
+}
+
+function reconcileNoSpendConfirmationsForDates(
+  transactions: Transaction[],
+  prevConfirmations: NoSpendConfirmation[] | undefined,
+  dates: string[]
+): NoSpendConfirmation[] {
+  const uniqueDates = Array.from(new Set(dates.filter(Boolean)));
+  if (uniqueDates.length === 0) return prevConfirmations ?? [];
+
+  const next = [...(prevConfirmations ?? [])];
+  for (const date of uniqueDates) {
+    const hasDiscretionaryOnDate = transactions.some(
+      (t) =>
+        !t.isVoided &&
+        t.type === 'expense' &&
+        !t.excludeFromExpenseStats &&
+        t.categoryId !== 'cat-biz-ops' &&
+        t.categoryId !== 'cat-debt' &&
+        t.isDiscretionary &&
+        t.date === date
+    );
+
+    const idx = next.findIndex((c) => c.date === date);
+    if (idx === -1) continue;
+
+    if (hasDiscretionaryOnDate && next[idx].status === 'confirmed') {
+      next[idx] = { ...next[idx], status: 'revoked' as const };
+    } else if (!hasDiscretionaryOnDate && next[idx].status === 'revoked') {
+      next[idx] = { ...next[idx], status: 'confirmed' as const };
+    }
+  }
+
+  return next;
+}
+
 export function updateTransactionAction(
   state: FinanceState,
   id: string,
   updates: Partial<Pick<Transaction, 'amount' | 'categoryId' | 'accountId' | 'date' | 'description' | 'notes'>>
 ): FinanceState {
   const prevTx = state.transactions.find((t) => t.id === id);
-  const next = {
-    ...state,
-    transactions: state.transactions.map((t) => {
-      if (t.id !== id) return t;
-      const categoryId = updates.categoryId ?? t.categoryId;
-      const cat = state.categories.find((c) => c.id === categoryId);
-      const isEssential =
-        t.type === 'expense' &&
-        (cat?.classification === 'essential' ||
-          cat?.classification === 'obligation' ||
-          cat?.classification === 'debt' ||
-          cat?.classification === 'business');
-      return {
-        ...t,
-        ...updates,
-        amount: updates.amount !== undefined ? Math.round(updates.amount) : t.amount,
-        isEssential,
-        isDiscretionary: t.type === 'expense' && !isEssential,
+  if (!prevTx) {
+    throw new Error('Transaksi tidak ditemukan.');
+  }
+  if (prevTx.isVoided) {
+    throw new Error('Transaksi yang sudah di-void tidak dapat diubah.');
+  }
+
+  const link = getTransactionLinkInfo(state, id);
+  if (link.isLinked) {
+    const amountChanged =
+      updates.amount !== undefined && Math.round(updates.amount) !== prevTx.amount;
+    const accountChanged =
+      updates.accountId !== undefined && updates.accountId !== prevTx.accountId;
+    const categoryChanged =
+      updates.categoryId !== undefined && updates.categoryId !== prevTx.categoryId;
+    const dateChanged =
+      updates.date !== undefined && updates.date !== prevTx.date;
+
+    if (amountChanged || accountChanged || categoryChanged || dateChanged) {
+      throw new Error(
+        link.reason ??
+          'Transaksi terikat relasi tidak dapat diubah nominal, akun, kategori, atau tanggalnya secara langsung. Gunakan mekanisme Void lalu catat ulang.'
+      );
+    }
+  }
+
+  if (updates.amount !== undefined) {
+    if (!Number.isFinite(updates.amount) || updates.amount <= 0 || Math.round(updates.amount) <= 0) {
+      throw new Error('Nominal transaksi harus lebih dari Rp0.');
+    }
+  }
+
+  const nextAmount = updates.amount !== undefined ? Math.round(updates.amount) : prevTx.amount;
+  const nextAccountId = updates.accountId ?? prevTx.accountId;
+  const nextCategoryId = updates.categoryId ?? prevTx.categoryId;
+  const nextDate = updates.date ?? prevTx.date;
+
+  if (prevTx.affectsAccountBalance !== false) {
+    const targetAcc = state.accounts.find((a) => a.id === nextAccountId);
+    if (!targetAcc) {
+      throw new Error('Akun transaksi tidak ditemukan.');
+    }
+    if ((targetAcc.status ?? 'active') !== 'active') {
+      throw new Error(
+        `Akun "${targetAcc.name}" berstatus ${targetAcc.status === 'closed' ? 'ditutup' : 'diarsipkan'} dan tidak dapat digunakan.`
+      );
+    }
+  }
+
+  const cat = state.categories.find((c) => c.id === nextCategoryId);
+  if (!cat) {
+    throw new Error('Kategori transaksi tidak ditemukan.');
+  }
+  if (cat.type !== prevTx.type) {
+    throw new Error(`Kategori "${cat.name}" tidak sesuai dengan jenis transaksi ini.`);
+  }
+
+  const isReconciliation =
+    prevTx.transactionNature === 'reconciliation' || prevTx.tags?.includes('rekonsiliasi');
+  const isEssential = isReconciliation
+    ? false
+    : prevTx.type === 'expense' &&
+      (cat.classification === 'essential' ||
+        cat.classification === 'obligation' ||
+        cat.classification === 'debt' ||
+        cat.classification === 'business');
+  const isDiscretionary = isReconciliation ? false : prevTx.type === 'expense' && !isEssential;
+
+  let exceededBudget = prevTx.exceededBudget;
+  if (prevTx.type === 'expense') {
+    if (isDiscretionary && !prevTx.excludeFromExpenseStats) {
+      const stateWithoutTx: FinanceState = {
+        ...state,
+        transactions: state.transactions.filter((t) => t.id !== id),
       };
-    }),
-  };
-  return appendChangeLog(next, {
-    entityType: 'transaction',
-    entityId: id,
-    action: 'update',
-    summary: `Ubah transaksi: ${prevTx?.description ?? id}`,
-    beforeValue: prevTx ? formatIDR(prevTx.amount) : undefined,
-    afterValue: updates.amount !== undefined ? formatIDR(updates.amount) : undefined,
+      const check = evaluateDisciplineForExpense(stateWithoutTx, {
+        amount: nextAmount,
+        categoryId: nextCategoryId,
+        accountId: nextAccountId,
+        date: nextDate,
+      });
+      exceededBudget = check.requiresConfirmation;
+    } else {
+      exceededBudget = false;
+    }
+  }
+
+  const nextTransactions = state.transactions.map((t) => {
+    if (t.id !== id) return t;
+    return {
+      ...t,
+      ...updates,
+      amount: nextAmount,
+      accountId: nextAccountId,
+      categoryId: nextCategoryId,
+      date: nextDate,
+      description:
+        updates.description !== undefined
+          ? updates.description.trim() || cat.name
+          : t.description,
+      notes: updates.notes !== undefined ? updates.notes.trim() || undefined : t.notes,
+      isEssential,
+      isDiscretionary,
+      exceededBudget,
+    };
   });
+
+  const nextNoSpend = reconcileNoSpendConfirmationsForDates(
+    nextTransactions,
+    state.noSpendConfirmations,
+    [prevTx.date, nextDate]
+  );
+
+  return appendChangeLog(
+    {
+      ...state,
+      transactions: nextTransactions,
+      noSpendConfirmations: nextNoSpend,
+    },
+    {
+      entityType: 'transaction',
+      entityId: id,
+      action: 'update',
+      summary: `Ubah transaksi: ${prevTx.description}`,
+      beforeValue: formatIDR(prevTx.amount),
+      afterValue: updates.amount !== undefined ? formatIDR(nextAmount) : undefined,
+    }
+  );
 }
 
 export function voidTransactionAction(
@@ -211,44 +489,154 @@ export function voidTransactionAction(
   if (!target) throw new Error('Transaksi tidak ditemukan.');
   if (target.isVoided) return state;
 
-  const next: FinanceState = {
-    ...state,
-    transactions: state.transactions.map((t) =>
+  const cleanReason = reason.trim() || 'Dibatalkan pengguna';
+  const nowISO = new Date().toISOString();
+  const link = getTransactionLinkInfo(state, id);
+
+  if (link.linkType === 'debt_payment' && link.linkedDebtPayment) {
+    return voidDebtPaymentAction(state, link.linkedDebtPayment.id, cleanReason);
+  }
+
+  if (link.linkType === 'debt_origin' && link.linkedDebt) {
+    const debt = link.linkedDebt;
+    const hasActivePayments = state.debtPayments.some(
+      (dp) => dp.debtId === debt.id && !dp.isVoided
+    );
+    if (hasActivePayments) {
+      throw new Error(
+        `Transaksi asal ${debt.direction === 'receivable' ? 'piutang' : 'utang'} (${debt.creditor}) masih memiliki pembayaran aktif. Batalkan pembayaran terkait terlebih dahulu sebelum membatalkan transaksi ini.`
+      );
+    }
+
+    const nextTransactions = state.transactions.map((t) =>
       t.id === id
         ? {
             ...t,
             isVoided: true,
-            voidedAt: new Date().toISOString(),
-            voidReason: reason.trim() || 'Dibatalkan pengguna',
+            voidedAt: nowISO,
+            voidReason: cleanReason,
+            exceededBudget: false,
           }
         : t
-    ),
-  };
-  return appendChangeLog(next, {
-    entityType: 'transaction',
-    entityId: id,
-    action: 'void',
-    summary: `Void transaksi: ${target.description} (${formatIDR(target.amount)})`,
-    beforeValue: formatIDR(target.amount),
-    afterValue: 'Void (Rp0 aktif)',
-    note: reason.trim() || undefined,
-  });
+    );
+
+    const nextDebts = state.debts.map((d) =>
+      d.id === debt.id
+        ? {
+            ...d,
+            remainingAmount: 0,
+            isVoided: true,
+            voidedAt: nowISO,
+            voidReason: cleanReason,
+          }
+        : d
+    );
+
+    const nextNoSpend = reconcileNoSpendConfirmationsForDates(
+      nextTransactions,
+      state.noSpendConfirmations,
+      [target.date]
+    );
+
+    return appendChangeLog(
+      {
+        ...state,
+        transactions: nextTransactions,
+        debts: nextDebts,
+        noSpendConfirmations: nextNoSpend,
+      },
+      {
+        entityType: debt.direction === 'receivable' ? 'receivable' : 'debt',
+        entityId: debt.id,
+        action: 'void',
+        summary: `Void transaksi & ${debt.direction === 'receivable' ? 'piutang' : 'utang'} (${debt.creditor}): ${formatIDR(target.amount)}`,
+        beforeValue: formatIDR(debt.remainingAmount),
+        afterValue: 'Void (Rp0 aktif)',
+        note: cleanReason,
+      }
+    );
+  }
+
+  if (
+    link.linkType === 'debt_orphan' ||
+    link.linkType === 'project_payment' ||
+    link.linkType === 'project_expense' ||
+    link.linkType === 'obligation_log'
+  ) {
+    throw new Error(
+      link.reason ??
+        'Transaksi terikat relasi ini tidak dapat di-void langsung dari buku transaksi.'
+    );
+  }
+
+  const nextTransactions = state.transactions.map((t) =>
+    t.id === id
+      ? {
+          ...t,
+          isVoided: true,
+          voidedAt: nowISO,
+          voidReason: cleanReason,
+          exceededBudget: false,
+        }
+      : t
+  );
+
+  const nextNoSpend = reconcileNoSpendConfirmationsForDates(
+    nextTransactions,
+    state.noSpendConfirmations,
+    [target.date]
+  );
+
+  return appendChangeLog(
+    {
+      ...state,
+      transactions: nextTransactions,
+      noSpendConfirmations: nextNoSpend,
+    },
+    {
+      entityType: 'transaction',
+      entityId: id,
+      action: 'void',
+      summary: `Void transaksi: ${target.description} (${formatIDR(target.amount)})`,
+      beforeValue: formatIDR(target.amount),
+      afterValue: 'Void (Rp0 aktif)',
+      note: cleanReason,
+    }
+  );
 }
 
 export function deleteTransactionAction(state: FinanceState, id: string): FinanceState {
   const target = state.transactions.find((t) => t.id === id);
-  const next = {
-    ...state,
-    transactions: state.transactions.filter((t) => t.id !== id),
-  };
-  if (!target) return withSyncBump(next);
-  return appendChangeLog(next, {
-    entityType: 'transaction',
-    entityId: id,
-    action: 'delete',
-    summary: `Hapus transaksi: ${target.description} (${formatIDR(target.amount)})`,
-    beforeValue: `${target.date} · ${formatIDR(target.amount)}`,
-  });
+  if (!target) return state;
+
+  const link = getTransactionLinkInfo(state, id);
+  if (link.isLinked) {
+    throw new Error(
+      `Transaksi "${target.description}" terhubung dengan entitas lain (${link.linkType}) dan tidak boleh dihapus permanen. Gunakan mekanisme Void jika ingin membatalkan transaksi secara aman.`
+    );
+  }
+
+  const nextTransactions = state.transactions.filter((t) => t.id !== id);
+  const nextNoSpend = reconcileNoSpendConfirmationsForDates(
+    nextTransactions,
+    state.noSpendConfirmations,
+    [target.date]
+  );
+
+  return appendChangeLog(
+    {
+      ...state,
+      transactions: nextTransactions,
+      noSpendConfirmations: nextNoSpend,
+    },
+    {
+      entityType: 'transaction',
+      entityId: id,
+      action: 'delete',
+      summary: `Hapus transaksi: ${target.description} (${formatIDR(target.amount)})`,
+      beforeValue: `${target.date} · ${formatIDR(target.amount)}`,
+    }
+  );
 }
 
 export function addTransferAction(
@@ -401,29 +789,146 @@ export function markProjectPaymentReceivedAction(
   receivedDate: string = todayISO()
 ): FinanceState {
   const payment = state.projectPayments.find((p) => p.id === paymentId);
-  if (!payment || payment.status === 'received') return state;
+  if (!payment || payment.isVoided || payment.status === 'received') return state;
   const project = state.projects.find((p) => p.id === payment.projectId);
+
+  const linkedReceivables = state.debts.filter(
+    (d) =>
+      !d.isVoided &&
+      d.status === 'active' &&
+      d.direction === 'receivable' &&
+      d.remainingAmount > 0 &&
+      d.projectPaymentId === paymentId
+  );
+
+  if (linkedReceivables.length === 0) {
+    const res = addTransactionAction(state, {
+      type: 'income',
+      amount: payment.amount,
+      categoryId: 'cat-income-freelance',
+      accountId,
+      date: receivedDate,
+      description: `Pembayaran Proyek — ${project?.projectName ?? 'Freelance'}`,
+      notes: payment.notes,
+      incomeSource: 'freelance',
+      projectId: payment.projectId,
+    });
+
+    return withSyncBump({
+      ...res.state,
+      projectPayments: res.state.projectPayments.map((p) =>
+        p.id === paymentId
+          ? { ...p, status: 'received', receivedDate, accountId, transactionId: res.transaction.id }
+          : p
+      ),
+    });
+  }
+
+  const primaryReceivable = linkedReceivables[0];
+  const projectRevenueAlreadyRecorded = linkedReceivables.some((d) =>
+    Boolean(d.revenueAlreadyRecorded)
+  );
 
   const res = addTransactionAction(state, {
     type: 'income',
     amount: payment.amount,
-    categoryId: 'cat-income-freelance',
+    categoryId: projectRevenueAlreadyRecorded ? 'cat-income-other' : 'cat-income-freelance',
     accountId,
     date: receivedDate,
     description: `Pembayaran Proyek — ${project?.projectName ?? 'Freelance'}`,
     notes: payment.notes,
+    tags: ['piutang', 'penagihan_proyek'],
     incomeSource: 'freelance',
     projectId: payment.projectId,
   });
 
-  return withSyncBump({
+  const enrichedTx: Transaction = {
+    ...res.transaction,
+    debtId: primaryReceivable.id,
+    transactionNature: 'receivable_collection',
+    affectsAccountBalance: true,
+    excludeFromIncomeStats: projectRevenueAlreadyRecorded,
+  };
+
+  let remainingPaymentBudget = payment.amount;
+  const nowISO = new Date().toISOString();
+  const createdDebtPayments: DebtPayment[] = [];
+  const settledUpdates: Array<{
+    debtId: string;
+    creditor: string;
+    applied: number;
+    beforeRemaining: number;
+    afterRemaining: number;
+  }> = [];
+
+  const updatedDebts = res.state.debts.map((d) => {
+    if (
+      d.isVoided ||
+      d.status !== 'active' ||
+      d.direction !== 'receivable' ||
+      d.remainingAmount <= 0 ||
+      d.projectPaymentId !== paymentId ||
+      remainingPaymentBudget <= 0
+    ) {
+      return d;
+    }
+
+    const applied = Math.min(remainingPaymentBudget, d.remainingAmount);
+    remainingPaymentBudget -= applied;
+    const nextRemaining = Math.max(0, d.remainingAmount - applied);
+
+    createdDebtPayments.push({
+      id: generateId(),
+      debtId: d.id,
+      amount: applied,
+      date: receivedDate,
+      accountId,
+      transactionId: enrichedTx.id,
+      notes:
+        payment.notes ||
+        `Pelunasan piutang dari pembayaran proyek (${project?.projectName ?? 'Freelance'})`,
+      createdAt: nowISO,
+    });
+
+    settledUpdates.push({
+      debtId: d.id,
+      creditor: d.creditor,
+      applied,
+      beforeRemaining: d.remainingAmount,
+      afterRemaining: nextRemaining,
+    });
+
+    return {
+      ...d,
+      remainingAmount: nextRemaining,
+      status: nextRemaining === 0 ? ('paid' as const) : ('active' as const),
+    };
+  });
+
+  let nextState: FinanceState = {
     ...res.state,
+    transactions: res.state.transactions.map((t) => (t.id === enrichedTx.id ? enrichedTx : t)),
     projectPayments: res.state.projectPayments.map((p) =>
       p.id === paymentId
-        ? { ...p, status: 'received', receivedDate, accountId, transactionId: res.transaction.id }
+        ? { ...p, status: 'received', receivedDate, accountId, transactionId: enrichedTx.id }
         : p
     ),
-  });
+    debts: updatedDebts,
+    debtPayments: [...createdDebtPayments, ...res.state.debtPayments],
+  };
+
+  for (const upd of settledUpdates) {
+    nextState = appendChangeLog(nextState, {
+      entityType: 'receivable',
+      entityId: upd.debtId,
+      action: 'update',
+      summary: `Pelunasan otomatis piutang proyek (${upd.creditor}): ${formatIDR(upd.applied)}`,
+      beforeValue: formatIDR(upd.beforeRemaining),
+      afterValue: formatIDR(upd.afterRemaining),
+    });
+  }
+
+  return nextState;
 }
 
 export function addProjectExpenseAction(
@@ -492,29 +997,242 @@ export function addDebtAction(
   state: FinanceState,
   input: {
     direction?: DebtDirection;
+    receivableType?: ReceivableKind;
+    debtReceiptType?: DebtReceiptKind;
+    accountId?: string;
+    expenseCategoryId?: string;
+    projectId?: string;
+    projectPaymentId?: string;
+    revenueAlreadyRecorded?: boolean;
     creditor: string;
     description: string;
     amount: number;
+    date?: string;
     dueDate?: string;
     priority?: number;
+    idempotencyKey?: string;
   }
 ): FinanceState {
-  if (input.amount <= 0) throw new Error('Nominal harus lebih dari Rp0.');
+  if (input.idempotencyKey) {
+    const alreadyRecorded = state.debts.some((d) => d.idempotencyKey === input.idempotencyKey);
+    if (alreadyRecorded) {
+      return state;
+    }
+  }
+
+  if (!input.creditor || !input.creditor.trim()) {
+    throw new Error('Nama pihak terkait wajib diisi.');
+  }
+  if (!Number.isFinite(input.amount) || input.amount <= 0) {
+    throw new Error('Nominal harus lebih dari Rp0.');
+  }
+
   const direction: DebtDirection = input.direction ?? 'payable';
+  const roundedAmount = Math.round(input.amount);
+  const txDate = input.date || todayISO();
+  const nowISO = new Date().toISOString();
+  const debtId = generateId();
+  const cleanCreditor = input.creditor.trim();
+  const cleanDesc = input.description.trim();
+
+  let nextTransactions = state.transactions;
+  let nextNoSpend = state.noSpendConfirmations ?? [];
+  let linkedTransactionId: string | undefined;
+  let resolvedAccountId: string | undefined;
+  let resolvedExpenseCategoryId: string | undefined;
+  let resolvedRevenueAlreadyRecorded = input.revenueAlreadyRecorded;
+
+  if (direction === 'receivable') {
+    if (input.receivableType === 'personal_loan') {
+      if (!input.accountId) {
+        throw new Error('Akun sumber dana wajib dipilih untuk pinjaman uang pribadi.');
+      }
+      const balances = computeAccountBalances(state);
+      const sourceAcc = balances.find((a) => a.id === input.accountId);
+      if (!sourceAcc) {
+        throw new Error('Akun sumber dana tidak ditemukan.');
+      }
+      if ((sourceAcc.status ?? 'active') !== 'active') {
+        throw new Error(`Akun "${sourceAcc.name}" tidak aktif dan tidak dapat digunakan.`);
+      }
+      if (sourceAcc.currentBalance < roundedAmount) {
+        throw new Error(
+          `Saldo akun "${sourceAcc.name}" (${formatIDR(sourceAcc.currentBalance)}) tidak mencukupi untuk memberikan pinjaman sebesar ${formatIDR(roundedAmount)}.`
+        );
+      }
+
+      const loanTx: Transaction = {
+        id: generateId(),
+        type: 'expense',
+        amount: roundedAmount,
+        categoryId: 'cat-debt',
+        accountId: sourceAcc.id,
+        date: txDate,
+        description: `Pinjaman Diberikan ke ${cleanCreditor}`,
+        notes: cleanDesc || undefined,
+        tags: ['piutang', 'pinjaman_pribadi'],
+        debtId,
+        transactionNature: 'loan_disbursement',
+        affectsAccountBalance: true,
+        excludeFromExpenseStats: true,
+        isEssential: false,
+        isDiscretionary: false,
+        exceededBudget: false,
+        isVoided: false,
+        createdAt: nowISO,
+      };
+      nextTransactions = [loanTx, ...nextTransactions];
+      linkedTransactionId = loanTx.id;
+      resolvedAccountId = sourceAcc.id;
+    } else if (input.receivableType === 'project_sales') {
+      if (input.projectId) {
+        const proj = state.projects.find((p) => p.id === input.projectId);
+        if (!proj) {
+          throw new Error('Proyek terkait tidak ditemukan.');
+        }
+        if (resolvedRevenueAlreadyRecorded === undefined) {
+          const projReceived = state.projectPayments
+            .filter((p) => p.projectId === proj.id && p.status === 'received' && !p.isVoided)
+            .reduce((sum, p) => sum + p.amount, 0);
+          if (projReceived >= proj.contractValue && proj.contractValue > 0) {
+            resolvedRevenueAlreadyRecorded = true;
+          }
+        }
+      }
+    }
+  } else {
+    if (input.debtReceiptType === 'cash_received') {
+      if (!input.accountId) {
+        throw new Error('Akun penerima dana wajib dipilih.');
+      }
+      const targetAcc = state.accounts.find((a) => a.id === input.accountId);
+      if (!targetAcc) {
+        throw new Error('Akun penerima dana tidak ditemukan.');
+      }
+      if ((targetAcc.status ?? 'active') !== 'active') {
+        throw new Error(`Akun "${targetAcc.name}" tidak aktif dan tidak dapat menerima dana.`);
+      }
+
+      const receiptTx: Transaction = {
+        id: generateId(),
+        type: 'income',
+        amount: roundedAmount,
+        categoryId: 'cat-income-other',
+        accountId: targetAcc.id,
+        date: txDate,
+        description: `Pinjaman Diterima dari ${cleanCreditor}`,
+        notes: cleanDesc || undefined,
+        tags: ['utang', 'dana_diterima'],
+        incomeSource: 'other',
+        debtId,
+        transactionNature: 'debt_receipt',
+        affectsAccountBalance: true,
+        excludeFromIncomeStats: true,
+        isEssential: false,
+        isDiscretionary: false,
+        exceededBudget: false,
+        isVoided: false,
+        createdAt: nowISO,
+      };
+      nextTransactions = [receiptTx, ...nextTransactions];
+      linkedTransactionId = receiptTx.id;
+      resolvedAccountId = targetAcc.id;
+    } else if (input.debtReceiptType === 'direct_expense') {
+      if (!input.expenseCategoryId) {
+        throw new Error('Kategori pengeluaran wajib dipilih.');
+      }
+      const cat = state.categories.find(
+        (c) => c.id === input.expenseCategoryId && c.type === 'expense'
+      );
+      if (!cat) {
+        throw new Error('Kategori pengeluaran tidak ditemukan.');
+      }
+      const nominalAcc =
+        state.accounts.find((a) => (a.status ?? 'active') === 'active' && !a.isBusiness) ??
+        state.accounts[0];
+      if (!nominalAcc) {
+        throw new Error('Tidak ada akun referensi pada sistem.');
+      }
+
+      const isEssential =
+        cat.classification === 'essential' ||
+        cat.classification === 'obligation' ||
+        cat.classification === 'debt' ||
+        cat.classification === 'business';
+      const isDiscretionary = !isEssential;
+
+      const directExpenseTx: Transaction = {
+        id: generateId(),
+        type: 'expense',
+        amount: roundedAmount,
+        categoryId: cat.id,
+        accountId: nominalAcc.id,
+        date: txDate,
+        description: cleanDesc || `${cat.name} (Dibayar ${cleanCreditor})`,
+        notes: `Dibayar langsung oleh ${cleanCreditor} (utang non-kas)`,
+        tags: ['utang', 'bayar_langsung'],
+        debtId,
+        transactionNature: 'debt_direct_expense',
+        affectsAccountBalance: false,
+        excludeFromExpenseStats: false,
+        isEssential,
+        isDiscretionary,
+        exceededBudget: false,
+        isVoided: false,
+        createdAt: nowISO,
+      };
+      nextTransactions = [directExpenseTx, ...nextTransactions];
+      if (isDiscretionary) {
+        nextNoSpend = nextNoSpend.map((c) =>
+          c.date === txDate ? { ...c, status: 'revoked' as const } : c
+        );
+      }
+      linkedTransactionId = directExpenseTx.id;
+      resolvedExpenseCategoryId = cat.id;
+    }
+  }
+
   const debt: Debt = {
-    id: generateId(),
+    id: debtId,
     direction,
-    creditor: input.creditor.trim(),
-    description: input.description.trim(),
-    initialAmount: Math.round(input.amount),
-    remainingAmount: Math.round(input.amount),
+    receivableType: direction === 'receivable' ? input.receivableType : undefined,
+    debtReceiptType: direction === 'payable' ? input.debtReceiptType : undefined,
+    accountId: resolvedAccountId,
+    expenseCategoryId: resolvedExpenseCategoryId,
+    transactionId: linkedTransactionId,
+    projectId: direction === 'receivable' ? input.projectId || undefined : undefined,
+    projectPaymentId: direction === 'receivable' ? input.projectPaymentId || undefined : undefined,
+    revenueAlreadyRecorded:
+      direction === 'receivable' && input.receivableType === 'project_sales'
+        ? Boolean(resolvedRevenueAlreadyRecorded)
+        : undefined,
+    date: txDate,
+    idempotencyKey: input.idempotencyKey,
+    creditor: cleanCreditor,
+    description:
+      cleanDesc ||
+      (direction === 'receivable'
+        ? input.receivableType === 'project_sales'
+          ? 'Tagihan proyek / penjualan'
+          : 'Pinjaman uang pribadi'
+        : input.debtReceiptType === 'direct_expense'
+        ? 'Pengeluaran dibayarkan langsung pihak lain'
+        : 'Pinjaman dana masuk ke akun'),
+    initialAmount: roundedAmount,
+    remainingAmount: roundedAmount,
     dueDate: input.dueDate ? input.dueDate : undefined,
     priority: input.priority ?? 1,
     status: 'active',
-    createdAt: new Date().toISOString(),
+    createdAt: nowISO,
   };
+
   return appendChangeLog(
-    { ...state, debts: [...state.debts, debt] },
+    {
+      ...state,
+      debts: [...state.debts, debt],
+      transactions: nextTransactions,
+      noSpendConfirmations: nextNoSpend,
+    },
     {
       entityType: direction === 'receivable' ? 'receivable' : 'debt',
       entityId: debt.id,
@@ -522,6 +1240,19 @@ export function addDebtAction(
       summary: `${direction === 'receivable' ? 'Catat piutang baru dari' : 'Catat utang baru ke'} ${debt.creditor}: ${formatIDR(debt.initialAmount)}`,
       afterValue: debt.dueDate ? `Jatuh tempo ${debt.dueDate}` : 'Tanpa jatuh tempo',
     }
+  );
+}
+
+export function findDefaultActiveDebt(
+  debts: Debt[],
+  direction: DebtDirection = 'payable'
+): Debt | undefined {
+  return debts.find(
+    (d) =>
+      !d.isVoided &&
+      d.status === 'active' &&
+      d.remainingAmount > 0 &&
+      (d.direction ?? 'payable') === direction
   );
 }
 
@@ -537,6 +1268,9 @@ export function updateDebtAction(
 ): FinanceState {
   const existing = state.debts.find((d) => d.id === debtId);
   if (!existing) throw new Error('Catatan utang/piutang tidak ditemukan.');
+  if (existing.isVoided) {
+    throw new Error('Catatan utang/piutang yang sudah dibatalkan (void) tidak dapat diedit.');
+  }
 
   const nextDue = updates.dueDate === null || updates.dueDate === '' ? undefined : updates.dueDate ?? existing.dueDate;
 
@@ -573,32 +1307,74 @@ export function repayDebtAction(
     accountId: string;
     date: string;
     notes?: string;
+    idempotencyKey?: string;
   }
 ): FinanceState {
+  if (input.idempotencyKey) {
+    const alreadyRecorded = state.debtPayments.some(
+      (dp) => dp.idempotencyKey === input.idempotencyKey
+    );
+    if (alreadyRecorded) {
+      return state;
+    }
+  }
+
   const debt = state.debts.find((d) => d.id === input.debtId);
   if (!debt) throw new Error('Data utang tidak ditemukan.');
+  if (debt.isVoided) throw new Error('Catatan utang ini sudah dibatalkan (void).');
   if ((debt.direction ?? 'payable') === 'receivable') {
     throw new Error('Gunakan penerimaan piutang untuk catatan piutang.');
   }
-  if (input.amount <= 0) throw new Error('Nominal pembayaran harus lebih dari Rp0.');
-  const payAmount = Math.min(Math.round(input.amount), debt.remainingAmount);
-  if (payAmount <= 0) throw new Error('Utang ini sudah lunas.');
+  if (!Number.isFinite(input.amount) || input.amount <= 0) {
+    throw new Error('Nominal pembayaran harus lebih dari Rp0.');
+  }
+  if (debt.status === 'paid' || debt.remainingAmount <= 0) {
+    throw new Error('Utang ini sudah lunas.');
+  }
 
-  const res = addTransactionAction(state, {
+  const payAmount = Math.min(Math.round(input.amount), debt.remainingAmount);
+  const balances = computeAccountBalances(state);
+  const sourceAcc = balances.find((a) => a.id === input.accountId);
+  if (!sourceAcc) {
+    throw new Error('Akun pembayaran utang tidak ditemukan.');
+  }
+  if ((sourceAcc.status ?? 'active') !== 'active') {
+    throw new Error(`Akun "${sourceAcc.name}" tidak aktif dan tidak dapat digunakan.`);
+  }
+  if (sourceAcc.currentBalance < payAmount) {
+    throw new Error(
+      `Saldo akun "${sourceAcc.name}" (${formatIDR(sourceAcc.currentBalance)}) tidak mencukupi untuk membayar utang sebesar ${formatIDR(payAmount)}.`
+    );
+  }
+
+  const nowISO = new Date().toISOString();
+  const tx: Transaction = {
+    id: generateId(),
     type: 'expense',
     amount: payAmount,
     categoryId: 'cat-debt',
-    accountId: input.accountId,
+    accountId: sourceAcc.id,
     date: input.date,
     description: `Cicil/Bayar Utang: ${debt.creditor}`,
-    notes: input.notes,
-  });
+    notes: input.notes?.trim() || undefined,
+    tags: ['utang', 'pelunasan'],
+    debtId: debt.id,
+    transactionNature: 'debt_repayment',
+    affectsAccountBalance: true,
+    excludeFromExpenseStats: true,
+    isEssential: true,
+    isDiscretionary: false,
+    exceededBudget: false,
+    isVoided: false,
+    createdAt: nowISO,
+  };
 
   const newRemaining = Math.max(0, debt.remainingAmount - payAmount);
 
-  return withSyncBump({
-    ...res.state,
-    debts: res.state.debts.map((d) =>
+  const nextState: FinanceState = {
+    ...state,
+    transactions: [tx, ...state.transactions],
+    debts: state.debts.map((d) =>
       d.id === debt.id
         ? { ...d, remainingAmount: newRemaining, status: newRemaining === 0 ? 'paid' : 'active' }
         : d
@@ -609,13 +1385,23 @@ export function repayDebtAction(
         debtId: debt.id,
         amount: payAmount,
         date: input.date,
-        accountId: input.accountId,
-        transactionId: res.transaction.id,
+        accountId: sourceAcc.id,
+        transactionId: tx.id,
         notes: input.notes?.trim() || undefined,
-        createdAt: new Date().toISOString(),
+        idempotencyKey: input.idempotencyKey,
+        createdAt: nowISO,
       },
-      ...res.state.debtPayments,
+      ...state.debtPayments,
     ],
+  };
+
+  return appendChangeLog(nextState, {
+    entityType: 'debt',
+    entityId: debt.id,
+    action: 'update',
+    summary: `Bayar utang ke ${debt.creditor}: ${formatIDR(payAmount)}`,
+    beforeValue: formatIDR(debt.remainingAmount),
+    afterValue: formatIDR(newRemaining),
   });
 }
 
@@ -627,31 +1413,143 @@ export function collectReceivableAction(
     accountId: string;
     date: string;
     notes?: string;
+    idempotencyKey?: string;
   }
 ): FinanceState {
+  if (input.idempotencyKey) {
+    const alreadyRecorded = state.debtPayments.some(
+      (dp) => dp.idempotencyKey === input.idempotencyKey
+    );
+    if (alreadyRecorded) {
+      return state;
+    }
+  }
+
   const item = state.debts.find((d) => d.id === input.debtId);
   if (!item) throw new Error('Data piutang tidak ditemukan.');
+  if (item.isVoided) throw new Error('Catatan piutang ini sudah dibatalkan (void).');
   if (item.direction !== 'receivable') throw new Error('Item ini bukan piutang.');
-  if (input.amount <= 0) throw new Error('Nominal penerimaan harus lebih dari Rp0.');
-  const collectAmount = Math.min(Math.round(input.amount), item.remainingAmount);
-  if (collectAmount <= 0) throw new Error('Piutang ini sudah lunas diterima.');
+  if (!Number.isFinite(input.amount) || input.amount <= 0) {
+    throw new Error('Nominal penerimaan harus lebih dari Rp0.');
+  }
+  if (item.status === 'paid' || item.remainingAmount <= 0) {
+    throw new Error('Piutang ini sudah lunas diterima.');
+  }
 
-  const res = addTransactionAction(state, {
+  const targetAcc = state.accounts.find((a) => a.id === input.accountId);
+  if (!targetAcc) {
+    throw new Error('Akun penerima pembayaran piutang tidak ditemukan.');
+  }
+  if ((targetAcc.status ?? 'active') !== 'active') {
+    throw new Error(`Akun "${targetAcc.name}" tidak aktif dan tidak dapat menerima dana.`);
+  }
+
+  const collectAmount = Math.min(Math.round(input.amount), item.remainingAmount);
+
+  // Prevent double-counting project revenue or treating personal loan principal return as new income
+  const linkedProjectPayment = item.projectPaymentId
+    ? state.projectPayments.find((p) => p.id === item.projectPaymentId && !p.isVoided)
+    : undefined;
+  const linkedProject = item.projectId
+    ? state.projects.find((p) => p.id === item.projectId)
+    : undefined;
+  const linkedProjectReceivedTotal = linkedProject
+    ? state.projectPayments
+        .filter((p) => p.projectId === linkedProject.id && p.status === 'received' && !p.isVoided)
+        .reduce((sum, p) => sum + p.amount, 0)
+    : 0;
+
+  const isPersonalLoanReturn = item.receivableType === 'personal_loan';
+  const projectRevenueAlreadyCounted =
+    Boolean(item.revenueAlreadyRecorded) ||
+    linkedProjectPayment?.status === 'received' ||
+    Boolean(
+      linkedProject &&
+        linkedProject.contractValue > 0 &&
+        linkedProjectReceivedTotal >= linkedProject.contractValue
+    );
+  const excludeFromIncomeStats = isPersonalLoanReturn || projectRevenueAlreadyCounted;
+
+  const isProjectReceivable =
+    item.receivableType === 'project_sales' || Boolean(item.projectId);
+  const nowISO = new Date().toISOString();
+
+  const tx: Transaction = {
+    id: generateId(),
     type: 'income',
     amount: collectAmount,
-    categoryId: 'cat-income-other',
-    accountId: input.accountId,
+    categoryId: isProjectReceivable && !excludeFromIncomeStats ? 'cat-income-freelance' : 'cat-income-other',
+    accountId: targetAcc.id,
     date: input.date,
     description: `Terima Piutang: ${item.creditor}`,
-    notes: input.notes,
-    incomeSource: 'other',
-  });
+    notes: input.notes?.trim() || undefined,
+    tags: ['piutang', isProjectReceivable ? 'penagihan_proyek' : 'pengembalian_pinjaman'],
+    incomeSource: isProjectReceivable ? 'freelance' : 'other',
+    projectId: item.projectId,
+    debtId: item.id,
+    transactionNature: 'receivable_collection',
+    affectsAccountBalance: true,
+    excludeFromIncomeStats,
+    isEssential: false,
+    isDiscretionary: false,
+    exceededBudget: false,
+    isVoided: false,
+    createdAt: nowISO,
+  };
 
   const newRemaining = Math.max(0, item.remainingAmount - collectAmount);
 
-  return withSyncBump({
-    ...res.state,
-    debts: res.state.debts.map((d) =>
+  // Synchronize linked ProjectPayment across both full and partial receivable collections
+  let nextProjectPayments = state.projectPayments;
+  if (linkedProjectPayment && linkedProjectPayment.status === 'expected') {
+    if (newRemaining === 0) {
+      nextProjectPayments = state.projectPayments.map((pp) =>
+        pp.id === linkedProjectPayment.id
+          ? {
+              ...pp,
+              amount: collectAmount,
+              status: 'received' as const,
+              receivedDate: input.date,
+              accountId: targetAcc.id,
+              transactionId: tx.id,
+            }
+          : pp
+      );
+    } else {
+      const nextExpectedAmount = Math.max(0, linkedProjectPayment.amount - collectAmount);
+      const installmentPayment: ProjectPayment = {
+        id: generateId(),
+        projectId: linkedProjectPayment.projectId,
+        paymentType: 'installment',
+        amount: collectAmount,
+        status: 'received',
+        expectedDate: linkedProjectPayment.expectedDate,
+        receivedDate: input.date,
+        accountId: targetAcc.id,
+        transactionId: tx.id,
+        notes: input.notes?.trim() || `Cicilan piutang proyek (${item.creditor})`,
+        isVoided: false,
+        createdAt: nowISO,
+      };
+      nextProjectPayments = [
+        installmentPayment,
+        ...state.projectPayments.map((pp) =>
+          pp.id === linkedProjectPayment.id
+            ? {
+                ...pp,
+                amount: nextExpectedAmount,
+              }
+            : pp
+        ),
+      ];
+    }
+  }
+
+  const nextState: FinanceState = {
+    ...state,
+    transactions: [tx, ...state.transactions],
+    projectPayments: nextProjectPayments,
+    debts: state.debts.map((d) =>
       d.id === item.id
         ? { ...d, remainingAmount: newRemaining, status: newRemaining === 0 ? 'paid' : 'active' }
         : d
@@ -662,14 +1560,196 @@ export function collectReceivableAction(
         debtId: item.id,
         amount: collectAmount,
         date: input.date,
-        accountId: input.accountId,
-        transactionId: res.transaction.id,
+        accountId: targetAcc.id,
+        transactionId: tx.id,
         notes: input.notes?.trim() || 'Penerimaan pelunasan piutang',
-        createdAt: new Date().toISOString(),
+        idempotencyKey: input.idempotencyKey,
+        createdAt: nowISO,
       },
-      ...res.state.debtPayments,
+      ...state.debtPayments,
     ],
+  };
+
+  return appendChangeLog(nextState, {
+    entityType: 'receivable',
+    entityId: item.id,
+    action: 'update',
+    summary: `Terima piutang dari ${item.creditor}: ${formatIDR(collectAmount)}`,
+    beforeValue: formatIDR(item.remainingAmount),
+    afterValue: formatIDR(newRemaining),
   });
+}
+
+export function voidDebtPaymentAction(
+  state: FinanceState,
+  debtPaymentId: string,
+  reason: string = 'Dibatalkan pengguna'
+): FinanceState {
+  const dp = state.debtPayments.find((p) => p.id === debtPaymentId);
+  if (!dp) {
+    throw new Error('Catatan pembayaran utang/piutang tidak ditemukan.');
+  }
+  if (dp.isVoided) {
+    return state;
+  }
+
+  const parentDebt = state.debts.find((d) => d.id === dp.debtId);
+  if (!parentDebt) {
+    throw new Error('Data utang/piutang induk untuk pembayaran ini tidak ditemukan.');
+  }
+  if (parentDebt.isVoided) {
+    throw new Error('Catatan utang/piutang induk sudah dalam status void.');
+  }
+
+  const cleanReason = reason.trim() || 'Dibatalkan pengguna';
+  const nowISO = new Date().toISOString();
+  const restoredRemaining = Math.min(
+    parentDebt.initialAmount,
+    parentDebt.remainingAmount + dp.amount
+  );
+  const restoredStatus: Debt['status'] = restoredRemaining > 0 ? 'active' : 'paid';
+
+  const nextDebtPayments = state.debtPayments.map((p) =>
+    p.id === dp.id
+      ? {
+          ...p,
+          isVoided: true,
+          voidedAt: nowISO,
+          voidReason: cleanReason,
+        }
+      : p
+  );
+
+  const nextTransactions = dp.transactionId
+    ? state.transactions.map((t) =>
+        t.id === dp.transactionId && !t.isVoided
+          ? {
+              ...t,
+              isVoided: true,
+              voidedAt: nowISO,
+              voidReason: cleanReason,
+              exceededBudget: false,
+            }
+          : t
+      )
+    : state.transactions;
+
+  const nextDebts = state.debts.map((d) =>
+    d.id === parentDebt.id
+      ? {
+          ...d,
+          remainingAmount: restoredRemaining,
+          status: restoredStatus,
+        }
+      : d
+  );
+
+  let nextProjectPayments = state.projectPayments;
+  if (dp.transactionId) {
+    const rootPpId = parentDebt.projectPaymentId;
+    const rootPp = rootPpId
+      ? state.projectPayments.find((pp) => pp.id === rootPpId && !pp.isVoided)
+      : undefined;
+
+    const rootHeldByActiveDebtPayment = Boolean(
+      rootPp &&
+        rootPp.status === 'received' &&
+        rootPp.transactionId &&
+        rootPp.transactionId !== dp.transactionId &&
+        state.debtPayments.some(
+          (otherDp) =>
+            otherDp.debtId === parentDebt.id &&
+            otherDp.id !== dp.id &&
+            !otherDp.isVoided &&
+            otherDp.transactionId === rootPp.transactionId
+        )
+    );
+
+    const preservedActiveReceiptFromRoot: ProjectPayment | null =
+      rootHeldByActiveDebtPayment && rootPp
+        ? {
+            id: generateId(),
+            projectId: rootPp.projectId,
+            paymentType: rootPp.paymentType === 'full' ? 'installment' : rootPp.paymentType,
+            amount: rootPp.amount,
+            status: 'received',
+            expectedDate: rootPp.expectedDate,
+            receivedDate: rootPp.receivedDate,
+            accountId: rootPp.accountId,
+            transactionId: rootPp.transactionId,
+            notes: rootPp.notes,
+            isVoided: false,
+            createdAt: rootPp.createdAt,
+          }
+        : null;
+
+    nextProjectPayments = state.projectPayments.map((pp) => {
+      if (rootPpId && pp.id === rootPpId) {
+        if (pp.transactionId === dp.transactionId) {
+          return {
+            ...pp,
+            status: 'expected' as const,
+            amount: restoredRemaining,
+            receivedDate: undefined,
+            accountId: undefined,
+            transactionId: undefined,
+          };
+        }
+        if (pp.status === 'expected') {
+          return {
+            ...pp,
+            amount: restoredRemaining,
+          };
+        }
+        if (preservedActiveReceiptFromRoot) {
+          return {
+            ...pp,
+            status: 'expected' as const,
+            amount: restoredRemaining,
+            receivedDate: undefined,
+            accountId: undefined,
+            transactionId: undefined,
+          };
+        }
+        return pp;
+      }
+
+      if (pp.transactionId === dp.transactionId && !pp.isVoided) {
+        return {
+          ...pp,
+          isVoided: true,
+          voidedAt: nowISO,
+          voidReason: cleanReason,
+        };
+      }
+
+      return pp;
+    });
+
+    if (preservedActiveReceiptFromRoot) {
+      nextProjectPayments = [preservedActiveReceiptFromRoot, ...nextProjectPayments];
+    }
+  }
+
+  const isReceivable = parentDebt.direction === 'receivable';
+  return appendChangeLog(
+    {
+      ...state,
+      transactions: nextTransactions,
+      debts: nextDebts,
+      debtPayments: nextDebtPayments,
+      projectPayments: nextProjectPayments,
+    },
+    {
+      entityType: isReceivable ? 'receivable' : 'debt',
+      entityId: parentDebt.id,
+      action: 'void',
+      summary: `Batalkan (void) ${isReceivable ? 'penerimaan piutang' : 'pembayaran utang'} ${parentDebt.creditor}: ${formatIDR(dp.amount)}`,
+      beforeValue: formatIDR(parentDebt.remainingAmount),
+      afterValue: formatIDR(restoredRemaining),
+      note: cleanReason,
+    }
+  );
 }
 
 export function addObligationAction(
@@ -1313,8 +2393,12 @@ export function reconcileAccountAction(
     description: `Rekonsiliasi Saldo: ${acc.name}`,
     notes: input.note?.trim() || `Penyesuaian saldo aktual dari ${formatIDR(acc.currentBalance)} ke ${formatIDR(target)}`,
     tags: ['rekonsiliasi'],
-    incomeSource: delta > 0 ? 'other' : undefined,
-    isEssential: true,
+    incomeSource: undefined,
+    transactionNature: 'reconciliation',
+    affectsAccountBalance: true,
+    excludeFromIncomeStats: true,
+    excludeFromExpenseStats: true,
+    isEssential: false,
     isDiscretionary: false,
     exceededBudget: false,
     isVoided: false,
@@ -1345,9 +2429,11 @@ export function deleteAccountAction(state: FinanceState, accountId: string): Fin
   ).length;
   const usedInProjPay = state.projectPayments.filter((p) => p.accountId === accountId).length;
   const usedInProjExp = state.projectExpenses.filter((e) => e.accountId === accountId).length;
-  const usedInDebt = state.debtPayments.filter((d) => d.accountId === accountId).length;
+  const usedInDebtPayments = state.debtPayments.filter((d) => d.accountId === accountId).length;
+  const usedInDebts = state.debts.filter((d) => d.accountId === accountId).length;
 
-  const totalRefs = usedInTx + usedInTransfer + usedInProjPay + usedInProjExp + usedInDebt;
+  const totalRefs =
+    usedInTx + usedInTransfer + usedInProjPay + usedInProjExp + usedInDebtPayments + usedInDebts;
   if (totalRefs > 0) {
     throw new Error(
       `Akun tidak dapat dihapus karena masih terhubung dengan ${totalRefs} catatan transaksi/transfer. Gunakan fitur Arsipkan atau Tutup Akun agar riwayat tetap terjaga.`

@@ -55,7 +55,7 @@ export function buildCalendarEventsForMonth(
 
   // 2. Active Debt & Receivable Due Dates (only when dueDate is explicitly set)
   for (const d of state.debts) {
-    if (d.status === 'active' && d.dueDate && d.dueDate >= monthStart && d.dueDate <= monthEnd) {
+    if (!d.isVoided && d.status === 'active' && d.dueDate && d.dueDate >= monthStart && d.dueDate <= monthEnd) {
       const isReceivable = d.direction === 'receivable';
       push({
         id: `debt-${d.id}`,
@@ -107,6 +107,7 @@ export function buildCalendarEventsForMonth(
   // 4. Expected Freelance Payment Schedules
   for (const pay of state.projectPayments) {
     if (
+      !pay.isVoided &&
       pay.status === 'expected' &&
       pay.expectedDate &&
       pay.expectedDate >= monthStart &&

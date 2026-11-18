@@ -30,6 +30,10 @@ import {
 } from '../hooks/financeActions';
 import { FinanceState, Transaction } from '../types/finance';
 import { formatDateID, formatIDR } from '../utils/format';
+import {
+  getTransactionAccountDisplay,
+  getTransactionNatureBadge,
+} from '../utils/transactionDisplay';
 import { QuickPreset } from './QuickTransactionModal';
 
 interface DashboardViewProps {
@@ -184,9 +188,9 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                 </p>
               </div>
               <div className="rounded-xl bg-slate-50 px-3 py-2">
-                <p className="text-[11px] text-slate-500">Tabungan &amp; Inv.</p>
+                <p className="text-[11px] text-slate-500">Tabungan &amp; Proteksi</p>
                 <p className="font-mono-num font-bold text-emerald-700 mt-0.5">
-                  {formatIDR(snapshot.accountBreakdown.savings + snapshot.accountBreakdown.investment)}
+                  {formatIDR(snapshot.protectedAccountBalance)}
                 </p>
               </div>
               <div className="rounded-xl bg-[#E8F6FC] px-3 py-2 col-span-2 sm:col-span-1">
@@ -679,7 +683,8 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
           <div className="divide-y divide-slate-100">
             {recentTx.map((tx) => {
               const cat = state.categories.find((c) => c.id === tx.categoryId);
-              const acc = state.accounts.find((a) => a.id === tx.accountId);
+              const accLabel = getTransactionAccountDisplay(tx, state.accounts);
+              const natureBadge = getTransactionNatureBadge(tx);
               return (
                 <button
                   key={tx.id}
@@ -688,11 +693,18 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                   className="w-full px-5 py-3.5 flex items-center justify-between gap-4 hover:bg-slate-50 transition-colors text-left"
                 >
                   <div className="min-w-0">
-                    <p className="text-sm font-semibold text-slate-900 truncate">{tx.description}</p>
+                    <div className="flex flex-wrap items-center gap-1.5">
+                      <p className="text-sm font-semibold text-slate-900 truncate">{tx.description}</p>
+                      {natureBadge && (
+                        <span className="rounded bg-slate-100 border border-slate-200 px-1.5 py-0.5 text-[10px] font-semibold text-slate-600 shrink-0">
+                          {natureBadge}
+                        </span>
+                      )}
+                    </div>
                     <p className="text-xs text-slate-500 mt-0.5 truncate">
                       <span>{cat?.name ?? 'Kategori'}</span>
                       <span aria-hidden="true"> · </span>
-                      <span>{acc?.name ?? 'Akun'}</span>
+                      <span>{accLabel}</span>
                       <span aria-hidden="true"> · </span>
                       <span>{formatDateID(tx.date)}</span>
                     </p>

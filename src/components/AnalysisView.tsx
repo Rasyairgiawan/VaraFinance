@@ -15,6 +15,7 @@ import { FinanceSnapshot } from '../engine/financeEngine';
 import { updateProjectionAssumptionsAction } from '../hooks/financeActions';
 import { FinanceState } from '../types/finance';
 import { addDaysISO, formatDateID, formatIDR, startOfWeekISO } from '../utils/format';
+import { buildFinanceCSVContent } from '../utils/transactionDisplay';
 
 interface AnalysisViewProps {
   state: FinanceState;
@@ -32,8 +33,16 @@ export const AnalysisView: React.FC<AnalysisViewProps> = ({ state, snapshot, onC
     const start = addDaysISO(currWeekStart, offset * 7);
     const end = addDaysISO(start, 6);
     const txs = validTransactions.filter((t) => t.date >= start && t.date <= end);
-    const income = txs.filter((t) => t.type === 'income').reduce((s, t) => s + t.amount, 0);
-    const expenses = txs.filter((t) => t.type === 'expense' && t.categoryId !== 'cat-biz-ops');
+    const income = txs
+      .filter((t) => t.type === 'income' && !t.excludeFromIncomeStats)
+      .reduce((s, t) => s + t.amount, 0);
+    const expenses = txs.filter(
+      (t) =>
+        t.type === 'expense' &&
+        t.categoryId !== 'cat-biz-ops' &&
+        t.categoryId !== 'cat-debt' &&
+        !t.excludeFromExpenseStats
+    );
     const expenseTotal = expenses.reduce((s, t) => s + t.amount, 0);
     const cig = expenses.filter((t) => t.categoryId === 'cat-cig').reduce((s, t) => s + t.amount, 0);
     const hang = expenses
@@ -62,7 +71,9 @@ export const AnalysisView: React.FC<AnalysisViewProps> = ({ state, snapshot, onC
     .sort((a, b) => b.monthlySpent - a.monthlySpent);
   const totalMonthlyCat = Math.max(1, catBreakdown.reduce((s, c) => s + c.monthlySpent, 0));
 
-  const payableDebts = state.debts.filter((d) => (d.direction ?? 'payable') === 'payable');
+  const payableDebts = state.debts.filter(
+    (d) => !d.isVoided && (d.direction ?? 'payable') === 'payable'
+  );
   const totalInitialDebt = payableDebts.reduce((s, d) => s + d.initialAmount, 0);
   const totalPaidDebt = Math.max(0, totalInitialDebt - snapshot.outstandingDebtTotal);
   const debtProgressPct =
@@ -80,45 +91,8 @@ export const AnalysisView: React.FC<AnalysisViewProps> = ({ state, snapshot, onC
   };
 
   const handleExportCSV = () => {
-    const escapeCSV = (val: string | number) => {
-      const s = String(val ?? '');
-      return s.includes(',') || s.includes('"') || s.includes('\n')
-        ? `"${s.replace(/"/g, '""')}"`
-        : s;
-    };
-
-    const rows: string[] = [
-      'RINGKASAN LAPORAN KEUANGAN KENDALIUANG',
-      `Tanggal Laporan,${snapshot.nowISO}`,
-      `Saldo Likuid Pribadi,${snapshot.liquidPersonalBalance}`,
-      `Kas Bisnis Freelance,${snapshot.businessBalance}`,
-      `Dana Dialokasikan,${snapshot.allocatedTotal}`,
-      `Dana Aman Dibelanjakan,${snapshot.safeToSpend}`,
-      `Kekurangan Pendanaan,${snapshot.fundingShortfall}`,
-      `Utang Aktif,${snapshot.outstandingDebtTotal}`,
-      `Piutang Aktif,${snapshot.outstandingReceivableTotal}`,
-      '',
-      'Tanggal,Tipe,Deskripsi,Kategori,Akun,Nominal,Status,Alasan Override',
-    ];
-
-    for (const tx of state.transactions) {
-      const cat = state.categories.find((c) => c.id === tx.categoryId)?.name ?? '';
-      const acc = state.accounts.find((a) => a.id === tx.accountId)?.name ?? '';
-      rows.push(
-        [
-          tx.date,
-          tx.type === 'income' ? 'Pemasukan' : 'Pengeluaran',
-          escapeCSV(tx.description),
-          escapeCSV(cat),
-          escapeCSV(acc),
-          tx.amount,
-          tx.isVoided ? 'Void' : 'Aktif',
-          escapeCSV(tx.overrideReason ?? ''),
-        ].join(',')
-      );
-    }
-
-    const blob = new Blob(['\uFEFF' + rows.join('\n')], { type: 'text/csv;charset=utf-8;' });
+    const csvContent = buildFinanceCSVContent(state, snapshot);
+    const blob = new Blob(['\uFEFF' + csvContent], { type: 'text/csv;charset=utf-8;' });
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;

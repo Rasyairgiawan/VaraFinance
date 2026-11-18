@@ -290,7 +290,7 @@ export function computeAccountBalances(state: FinanceState): AccountWithBalance[
   }
 
   for (const tx of state.transactions) {
-    if (tx.isVoided) continue;
+    if (tx.isVoided || tx.affectsAccountBalance === false) continue;
     const prev = balances.get(tx.accountId) ?? 0;
     if (tx.type === 'income') {
       balances.set(tx.accountId, prev + tx.amount);
@@ -316,8 +316,8 @@ export function computeProjectSummary(
   payments: ProjectPayment[],
   expenses: ProjectExpense[]
 ): ProjectFinancialSummary {
-  const projPayments = payments.filter((p) => p.projectId === project.id);
-  const projExpenses = expenses.filter((e) => e.projectId === project.id);
+  const projPayments = payments.filter((p) => p.projectId === project.id && !p.isVoided);
+  const projExpenses = expenses.filter((e) => e.projectId === project.id && !e.isVoided);
 
   const receivedAmount = projPayments
     .filter((p) => p.status === 'received')
@@ -397,18 +397,34 @@ export function computeFinanceSnapshot(
     .reduce((s, a) => s + a.currentBalance, 0);
 
   const accountBreakdown: AccountBalanceBreakdown = {
-    cash: activeAccounts.filter((a) => !a.isBusiness && a.accountType === 'cash').reduce((s, a) => s + a.currentBalance, 0),
-    bankPersonal: activeAccounts.filter((a) => !a.isBusiness && a.accountType === 'bank').reduce((s, a) => s + a.currentBalance, 0),
-    ewallet: activeAccounts.filter((a) => !a.isBusiness && a.accountType === 'ewallet').reduce((s, a) => s + a.currentBalance, 0),
-    savings: activeAccounts.filter((a) => !a.isBusiness && a.accountType === 'savings').reduce((s, a) => s + a.currentBalance, 0),
-    investment: activeAccounts.filter((a) => !a.isBusiness && a.accountType === 'investment').reduce((s, a) => s + a.currentBalance, 0),
+    cash: activeAccounts
+      .filter((a) => !a.isBusiness && !a.isProtected && a.accountType === 'cash')
+      .reduce((s, a) => s + a.currentBalance, 0),
+    bankPersonal: activeAccounts
+      .filter((a) => !a.isBusiness && !a.isProtected && a.accountType === 'bank')
+      .reduce((s, a) => s + a.currentBalance, 0),
+    ewallet: activeAccounts
+      .filter((a) => !a.isBusiness && !a.isProtected && a.accountType === 'ewallet')
+      .reduce((s, a) => s + a.currentBalance, 0),
+    savings: activeAccounts
+      .filter((a) => !a.isBusiness && a.accountType === 'savings')
+      .reduce((s, a) => s + a.currentBalance, 0),
+    investment: activeAccounts
+      .filter((a) => !a.isBusiness && a.accountType === 'investment')
+      .reduce((s, a) => s + a.currentBalance, 0),
     business: activeAccounts.filter((a) => a.isBusiness).reduce((s, a) => s + a.currentBalance, 0),
   };
 
   const liquidPersonalBalance =
     accountBreakdown.cash + accountBreakdown.bankPersonal + accountBreakdown.ewallet;
   const businessBalance = accountBreakdown.business;
-  const protectedAccountBalance = accountBreakdown.savings + accountBreakdown.investment;
+  const protectedAccountBalance = activeAccounts
+    .filter(
+      (a) =>
+        !a.isBusiness &&
+        (Boolean(a.isProtected) || a.accountType === 'savings' || a.accountType === 'investment')
+    )
+    .reduce((s, a) => s + a.currentBalance, 0);
   const totalNetAssets = liquidPersonalBalance + businessBalance + protectedAccountBalance + archivedBalanceTotal;
 
   // Separate Obligations vs Scheduled Expenses (both active and within date range)
@@ -440,11 +456,11 @@ export function computeFinanceSnapshot(
 
   // Utang (payable) vs Piutang (receivable)
   const outstandingDebtTotal = state.debts
-    .filter((d) => d.status === 'active' && (d.direction ?? 'payable') === 'payable')
+    .filter((d) => !d.isVoided && d.status === 'active' && (d.direction ?? 'payable') === 'payable')
     .reduce((sum, d) => sum + d.remainingAmount, 0);
 
   const outstandingReceivableTotal = state.debts
-    .filter((d) => d.status === 'active' && d.direction === 'receivable')
+    .filter((d) => !d.isVoided && d.status === 'active' && d.direction === 'receivable')
     .reduce((sum, d) => sum + d.remainingAmount, 0);
 
   const essentialReserve = state.settings.essentialReserveTarget;
@@ -499,9 +515,15 @@ export function computeFinanceSnapshot(
 
   const validTransactions = state.transactions.filter((t) => !t.isVoided);
   const personalExpenseTx = validTransactions.filter(
-    (t) => t.type === 'expense' && t.categoryId !== 'cat-biz-ops' && t.categoryId !== 'cat-debt'
+    (t) =>
+      t.type === 'expense' &&
+      t.categoryId !== 'cat-biz-ops' &&
+      t.categoryId !== 'cat-debt' &&
+      !t.excludeFromExpenseStats
   );
-  const allIncomeTx = validTransactions.filter((t) => t.type === 'income');
+  const allIncomeTx = validTransactions.filter(
+    (t) => t.type === 'income' && !t.excludeFromIncomeStats
+  );
 
   const todayExpenses = personalExpenseTx.filter((t) => t.date === referenceISO);
   const weekExpenses = personalExpenseTx.filter((t) => t.date >= weekStart && t.date <= referenceISO);
@@ -875,7 +897,7 @@ export function computeFinanceSnapshot(
             25
         );
   const debtAndSavingsScore =
-    (outstandingDebtTotal === 0 ? 10 : state.debtPayments.length > 0 ? 5 : 0) +
+    (outstandingDebtTotal === 0 ? 10 : state.debtPayments.some((dp) => !dp.isVoided) ? 5 : 0) +
     (emergencyTarget > 0 ? Math.min(10, Math.round((emergencySaved / emergencyTarget) * 10)) : 10);
 
   const disciplineScore = hasEnoughDisciplineData
@@ -1013,7 +1035,7 @@ function buildActiveReminders(
   }
 
   for (const d of state.debts) {
-    if (d.status !== 'active' || !d.dueDate) continue;
+    if (d.isVoided || d.status !== 'active' || !d.dueDate) continue;
     const days = daysBetweenISO(referenceISO, d.dueDate);
     if (days <= rs.debtDueDaysBefore) {
       const isReceivable = d.direction === 'receivable';

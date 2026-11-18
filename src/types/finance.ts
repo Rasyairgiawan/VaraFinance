@@ -23,6 +23,19 @@ export type ObligationKind = 'obligation' | 'scheduled_expense';
 
 export type DebtDirection = 'payable' | 'receivable';
 
+export type ReceivableKind = 'personal_loan' | 'project_sales';
+
+export type DebtReceiptKind = 'cash_received' | 'direct_expense';
+
+export type TransactionNature =
+  | 'standard'
+  | 'loan_disbursement'
+  | 'debt_receipt'
+  | 'debt_direct_expense'
+  | 'debt_repayment'
+  | 'receivable_collection'
+  | 'reconciliation';
+
 export interface AllocationRules {
   obligations: number;
   debt: number;
@@ -168,6 +181,11 @@ export interface Transaction {
   tags: string[];
   incomeSource?: IncomeSourceType;
   projectId?: string;
+  debtId?: string;
+  transactionNature?: TransactionNature;
+  affectsAccountBalance?: boolean;
+  excludeFromExpenseStats?: boolean;
+  excludeFromIncomeStats?: boolean;
   isEssential: boolean;
   isDiscretionary: boolean;
   exceededBudget: boolean;
@@ -252,6 +270,16 @@ export interface Debt {
   id: string;
   systemKey?: string;
   direction?: DebtDirection; // 'payable' (utang) | 'receivable' (piutang), default 'payable'
+  receivableType?: ReceivableKind;
+  debtReceiptType?: DebtReceiptKind;
+  accountId?: string;
+  expenseCategoryId?: string;
+  transactionId?: string;
+  projectId?: string;
+  projectPaymentId?: string;
+  revenueAlreadyRecorded?: boolean;
+  date?: string;
+  idempotencyKey?: string;
   creditor: string;
   description: string;
   initialAmount: number;
@@ -259,6 +287,9 @@ export interface Debt {
   dueDate?: string;
   priority: number;
   status: 'active' | 'paid';
+  isVoided?: boolean;
+  voidedAt?: string;
+  voidReason?: string;
   createdAt: string;
   updatedAt?: string;
   deletedAt?: string;
@@ -273,6 +304,7 @@ export interface DebtPayment {
   accountId: string;
   transactionId?: string;
   notes?: string;
+  idempotencyKey?: string;
   isVoided?: boolean;
   voidedAt?: string;
   voidReason?: string;

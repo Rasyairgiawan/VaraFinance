@@ -28,6 +28,7 @@ import {
   deleteTransactionAction,
   distributeProjectPersonalShareAction,
   editAccountAction,
+  getTransactionLinkInfo,
   markProjectPaymentReceivedAction,
   reconcileAccountAction,
   reopenAccountAction,
@@ -35,6 +36,10 @@ import {
 } from '../hooks/financeActions';
 import { Account, FinanceState, Transaction } from '../types/finance';
 import { formatDateID, formatIDR, todayISO } from '../utils/format';
+import {
+  getTransactionAccountDisplay,
+  getTransactionNatureBadge,
+} from '../utils/transactionDisplay';
 import { QuickPreset } from './QuickTransactionModal';
 
 interface TransactionsAndProjectsViewProps {
@@ -58,6 +63,7 @@ export const TransactionsAndProjectsView: React.FC<TransactionsAndProjectsViewPr
   const [showVoided, setShowVoided] = useState(true);
   const [voidingTxId, setVoidingTxId] = useState<string | null>(null);
   const [voidReason, setVoidReason] = useState('');
+  const [txError, setTxError] = useState<string | null>(null);
   const [showAuditLog, setShowAuditLog] = useState(false);
 
   // New Project Form state
@@ -116,9 +122,23 @@ export const TransactionsAndProjectsView: React.FC<TransactionsAndProjectsViewPr
   const handleConfirmVoid = (e: React.FormEvent) => {
     e.preventDefault();
     if (!voidingTxId) return;
-    onCommit(voidTransactionAction(state, voidingTxId, voidReason || 'Dibatalkan pengguna'));
-    setVoidingTxId(null);
-    setVoidReason('');
+    setTxError(null);
+    try {
+      onCommit(voidTransactionAction(state, voidingTxId, voidReason || 'Dibatalkan pengguna'));
+      setVoidingTxId(null);
+      setVoidReason('');
+    } catch (err) {
+      setTxError(err instanceof Error ? err.message : 'Gagal membatalkan (void) transaksi.');
+    }
+  };
+
+  const handleDeleteTx = (txId: string) => {
+    setTxError(null);
+    try {
+      onCommit(deleteTransactionAction(state, txId));
+    } catch (err) {
+      setTxError(err instanceof Error ? err.message : 'Gagal menghapus transaksi.');
+    }
   };
 
   const handleCreateProject = (e: React.FormEvent) => {
@@ -384,6 +404,19 @@ export const TransactionsAndProjectsView: React.FC<TransactionsAndProjectsViewPr
             </div>
           </div>
 
+          {txError && (
+            <div className="rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-xs font-semibold text-red-700 flex items-center justify-between gap-2">
+              <span>{txError}</span>
+              <button
+                type="button"
+                onClick={() => setTxError(null)}
+                className="text-red-800 underline shrink-0"
+              >
+                Tutup
+              </button>
+            </div>
+          )}
+
           <div className="rounded-2xl border border-slate-200 bg-white overflow-hidden">
             {filteredTx.length === 0 ? (
               <div className="p-8 text-center text-sm text-slate-500">
@@ -393,12 +426,15 @@ export const TransactionsAndProjectsView: React.FC<TransactionsAndProjectsViewPr
               <div className="divide-y divide-slate-100">
                 {filteredTx.map((tx) => {
                   const cat = state.categories.find((c) => c.id === tx.categoryId);
-                  const acc = state.accounts.find((a) => a.id === tx.accountId);
+                  const accLabel = getTransactionAccountDisplay(tx, state.accounts);
+                  const natureBadge = getTransactionNatureBadge(tx);
+                  const linkInfo = getTransactionLinkInfo(state, tx.id);
+
                   return (
                     <div key={tx.id} className="px-5 py-3.5 hover:bg-slate-50 space-y-2">
                       <div className="flex items-center justify-between gap-4">
                         <div className="min-w-0 flex-1">
-                          <div className="flex items-center gap-2">
+                          <div className="flex flex-wrap items-center gap-2">
                             <p
                               className={`text-sm font-semibold truncate ${
                                 tx.isVoided ? 'line-through text-slate-400' : 'text-slate-900'
@@ -406,6 +442,20 @@ export const TransactionsAndProjectsView: React.FC<TransactionsAndProjectsViewPr
                             >
                               {tx.description}
                             </p>
+                            {natureBadge && (
+                              <span className="rounded bg-slate-100 border border-slate-200 px-1.5 py-0.5 text-[10px] font-semibold text-slate-600">
+                                {natureBadge}
+                              </span>
+                            )}
+                            {linkInfo.isLinked && !tx.isVoided && (
+                              <span
+                                className="inline-flex items-center gap-1 rounded bg-slate-100 border border-slate-200 px-1.5 py-0.5 text-[10px] font-medium text-slate-600"
+                                title={linkInfo.reason}
+                              >
+                                <Lock className="w-2.5 h-2.5" />
+                                <span>Terikat Relasi</span>
+                              </span>
+                            )}
                             {tx.isVoided && (
                               <span className="rounded bg-slate-100 border border-slate-200 px-1.5 py-0.5 text-[10px] font-bold text-slate-600">
                                 VOID
@@ -413,7 +463,7 @@ export const TransactionsAndProjectsView: React.FC<TransactionsAndProjectsViewPr
                             )}
                           </div>
                           <p className="text-xs text-slate-500 mt-0.5 truncate">
-                            {cat?.name} · {acc?.name} · {formatDateID(tx.date)}
+                            {cat?.name} · {accLabel} · {formatDateID(tx.date)}
                             {tx.overrideReason ? ` · Alasan: "${tx.overrideReason}"` : ''}
                             {tx.isVoided && tx.voidReason ? ` · Void: "${tx.voidReason}"` : ''}
                           </p>
@@ -437,6 +487,11 @@ export const TransactionsAndProjectsView: React.FC<TransactionsAndProjectsViewPr
                                 type="button"
                                 onClick={() => onEditTx(tx)}
                                 className="p-2 text-slate-400 hover:text-[#0976A6] rounded-lg"
+                                title={
+                                  linkInfo.isLinked
+                                    ? 'Edit catatan/deskripsi (nominal, akun, kategori dikunci)'
+                                    : 'Edit transaksi'
+                                }
                                 aria-label="Edit transaksi"
                               >
                                 <Pencil className="w-4 h-4" />
@@ -444,11 +499,27 @@ export const TransactionsAndProjectsView: React.FC<TransactionsAndProjectsViewPr
                               <button
                                 type="button"
                                 onClick={() => {
+                                  setTxError(null);
+                                  if (!linkInfo.canDirectVoid) {
+                                    setTxError(
+                                      linkInfo.reason ??
+                                        'Transaksi terikat relasi ini tidak dapat di-void langsung.'
+                                    );
+                                    return;
+                                  }
                                   setVoidingTxId(tx.id);
                                   setVoidReason('');
                                 }}
-                                className="p-2 text-slate-400 hover:text-amber-700 rounded-lg"
-                                title="Void transaksi (batalkan tanpa hapus riwayat)"
+                                className={`p-2 rounded-lg ${
+                                  linkInfo.canDirectVoid
+                                    ? 'text-slate-400 hover:text-amber-700'
+                                    : 'text-slate-300 cursor-not-allowed'
+                                }`}
+                                title={
+                                  linkInfo.canDirectVoid
+                                    ? 'Void transaksi (batalkan tanpa hapus riwayat)'
+                                    : linkInfo.reason
+                                }
                                 aria-label="Void transaksi"
                               >
                                 <Ban className="w-4 h-4" />
@@ -457,8 +528,17 @@ export const TransactionsAndProjectsView: React.FC<TransactionsAndProjectsViewPr
                           )}
                           <button
                             type="button"
-                            onClick={() => onCommit(deleteTransactionAction(state, tx.id))}
-                            className="p-2 text-slate-400 hover:text-red-600 rounded-lg"
+                            onClick={() => handleDeleteTx(tx.id)}
+                            className={`p-2 rounded-lg ${
+                              linkInfo.isLinked
+                                ? 'text-slate-300 cursor-not-allowed'
+                                : 'text-slate-400 hover:text-red-600'
+                            }`}
+                            title={
+                              linkInfo.isLinked
+                                ? 'Transaksi terikat relasi tidak dapat dihapus permanen. Gunakan Void.'
+                                : 'Hapus permanen transaksi'
+                            }
                             aria-label="Hapus permanen transaksi"
                           >
                             <Trash2 className="w-4 h-4" />
@@ -696,8 +776,12 @@ export const TransactionsAndProjectsView: React.FC<TransactionsAndProjectsViewPr
           ) : (
             <div className="space-y-4">
               {snapshot.projectSummaries.map((ps) => {
-                const payments = state.projectPayments.filter((p) => p.projectId === ps.project.id);
-                const expenses = state.projectExpenses.filter((e) => e.projectId === ps.project.id);
+                const payments = state.projectPayments.filter(
+                  (p) => p.projectId === ps.project.id && !p.isVoided
+                );
+                const expenses = state.projectExpenses.filter(
+                  (e) => e.projectId === ps.project.id && !e.isVoided
+                );
                 const isActionOpen = activeProjAction?.projectId === ps.project.id;
 
                 return (

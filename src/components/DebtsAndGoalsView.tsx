@@ -1,11 +1,13 @@
-import React, { useState } from 'react';
+import React, { useRef, useState } from 'react';
 import {
+  AlertCircle,
   Archive,
   ArrowRightCircle,
   CalendarClock,
   CheckCircle2,
   CreditCard,
   History,
+  Info,
   Pencil,
   PiggyBank,
   Plus,
@@ -27,19 +29,22 @@ import {
   reserveObligationAction,
   updateDebtAction,
   updateObligationAction,
+  voidDebtPaymentAction,
 } from '../hooks/financeActions';
 import {
   Debt,
   DebtDirection,
+  DebtReceiptKind,
   FinanceState,
   GoalType,
   ObligationDurationType,
   ObligationFrequency,
   ObligationKind,
   ObligationStatus,
+  ReceivableKind,
   RecurringObligation,
 } from '../types/finance';
-import { formatDateID, formatIDR, todayISO } from '../utils/format';
+import { formatDateID, formatIDR, generateId, todayISO } from '../utils/format';
 
 interface DebtsAndGoalsViewProps {
   state: FinanceState;
@@ -72,17 +77,36 @@ export const DebtsAndGoalsView: React.FC<DebtsAndGoalsViewProps> = ({
   const [debtFilter, setDebtFilter] = useState<'all' | 'payable' | 'receivable'>('all');
   const [showNewDebt, setShowNewDebt] = useState(false);
   const [debtDirection, setDebtDirection] = useState<DebtDirection>('payable');
+  const [receivableType, setReceivableType] = useState<ReceivableKind>('personal_loan');
+  const [debtReceiptType, setDebtReceiptType] = useState<DebtReceiptKind>('cash_received');
+  const [debtAccountId, setDebtAccountId] = useState('acc-cash');
+  const [debtExpenseCategoryId, setDebtExpenseCategoryId] = useState('cat-food');
+  const [debtProjectId, setDebtProjectId] = useState('');
+  const [debtRevenueAlreadyRecorded, setDebtRevenueAlreadyRecorded] = useState(false);
+  const [debtDate, setDebtDate] = useState(todayISO());
   const [creditor, setCreditor] = useState('');
   const [debtDesc, setDebtDesc] = useState('');
   const [debtAmount, setDebtAmount] = useState('');
   const [debtDueDate, setDebtDueDate] = useState('');
+  const [debtFormError, setDebtFormError] = useState<string | null>(null);
+  const [isSubmittingDebt, setIsSubmittingDebt] = useState(false);
+  const debtSubmitKeyRef = useRef<string>(generateId());
+  const debtSubmittingLockRef = useRef(false);
 
   const [repayDebtId, setRepayDebtId] = useState<string | null>(null);
   const [repayAmount, setRepayAmount] = useState('');
   const [repayAccId, setRepayAccId] = useState('acc-cash');
+  const [repayDate, setRepayDate] = useState(todayISO());
+  const [repayNotes, setRepayNotes] = useState('');
+  const [repayError, setRepayError] = useState<string | null>(null);
+  const [isSettlingDebt, setIsSettlingDebt] = useState(false);
+  const settleSubmitKeyRef = useRef<string>(generateId());
+  const settleSubmittingLockRef = useRef(false);
+
   const [editingDueId, setEditingDueId] = useState<string | null>(null);
   const [editDueVal, setEditDueVal] = useState('');
   const [debtHistoryId, setDebtHistoryId] = useState<string | null>(null);
+  const [debtHistoryError, setDebtHistoryError] = useState<string | null>(null);
 
   // Obligations & Scheduled Expenses
   const [obKindFilter, setObKindFilter] = useState<'all' | 'obligation' | 'scheduled_expense'>('all');
@@ -121,51 +145,189 @@ export const DebtsAndGoalsView: React.FC<DebtsAndGoalsViewProps> = ({
   const [contribFromAcc, setContribFromAcc] = useState('acc-cash');
   const [contribToAcc, setContribToAcc] = useState('acc-savings');
 
-  const handleAddDebt = (e: React.FormEvent) => {
-    e.preventDefault();
-    const amt = Number(debtAmount) || 0;
-    if (!creditor.trim() || amt <= 0) return;
-    onCommit(
-      addDebtAction(state, {
-        direction: debtDirection,
-        creditor,
-        description: debtDesc || (debtDirection === 'receivable' ? 'Piutang / pinjaman teman' : 'Utang pribadi'),
-        amount: amt,
-        dueDate: debtDueDate || undefined,
-      })
-    );
+  const activeAccounts = snapshot.activeAccounts;
+  const activeExpenseCategories = state.categories.filter(
+    (c) => c.type === 'expense' && !c.isArchived && c.id !== 'cat-debt'
+  );
+  const activeProjects = state.projects.filter((p) => !p.isArchived);
+
+  const resolvedDebtAccountId = activeAccounts.some((a) => a.id === debtAccountId)
+    ? debtAccountId
+    : activeAccounts[0]?.id ?? '';
+  const resolvedExpenseCategoryId = activeExpenseCategories.some(
+    (c) => c.id === debtExpenseCategoryId
+  )
+    ? debtExpenseCategoryId
+    : activeExpenseCategories.find((c) => c.id === 'cat-food')?.id ??
+      activeExpenseCategories[0]?.id ??
+      '';
+  const resolvedRepayAccId = activeAccounts.some((a) => a.id === repayAccId)
+    ? repayAccId
+    : activeAccounts[0]?.id ?? '';
+
+  const openNewDebtForm = () => {
+    setDebtFormError(null);
     setCreditor('');
     setDebtDesc('');
     setDebtAmount('');
     setDebtDueDate('');
-    setShowNewDebt(false);
+    setDebtDate(todayISO());
+    setDebtProjectId('');
+    setDebtRevenueAlreadyRecorded(false);
+    setDebtAccountId(activeAccounts[0]?.id ?? 'acc-cash');
+    setDebtExpenseCategoryId(
+      activeExpenseCategories.find((c) => c.id === 'cat-food')?.id ??
+        activeExpenseCategories[0]?.id ??
+        'cat-food'
+    );
+    debtSubmitKeyRef.current = generateId();
+    debtSubmittingLockRef.current = false;
+    setShowNewDebt(true);
+  };
+
+  const handleAddDebt = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (debtSubmittingLockRef.current) return;
+    setDebtFormError(null);
+
+    const amt = Number(debtAmount) || 0;
+    if (!creditor.trim()) {
+      setDebtFormError(
+        debtDirection === 'receivable'
+          ? 'Nama peminjam atau klien wajib diisi.'
+          : 'Nama pemberi pinjaman atau pihak terkait wajib diisi.'
+      );
+      return;
+    }
+    if (amt <= 0) {
+      setDebtFormError('Nominal harus lebih dari Rp0.');
+      return;
+    }
+
+    if (debtDirection === 'receivable' && receivableType === 'personal_loan') {
+      if (!resolvedDebtAccountId) {
+        setDebtFormError('Akun sumber dana wajib dipilih.');
+        return;
+      }
+      const sourceAcc = activeAccounts.find((a) => a.id === resolvedDebtAccountId);
+      if (sourceAcc && sourceAcc.currentBalance < Math.round(amt)) {
+        setDebtFormError(
+          `Saldo akun "${sourceAcc.name}" (${formatIDR(sourceAcc.currentBalance)}) tidak mencukupi untuk memberikan pinjaman sebesar ${formatIDR(amt)}.`
+        );
+        return;
+      }
+    }
+
+    if (debtDirection === 'payable' && debtReceiptType === 'cash_received' && !resolvedDebtAccountId) {
+      setDebtFormError('Akun penerima dana wajib dipilih.');
+      return;
+    }
+
+    if (debtDirection === 'payable' && debtReceiptType === 'direct_expense' && !resolvedExpenseCategoryId) {
+      setDebtFormError('Kategori pengeluaran wajib dipilih.');
+      return;
+    }
+
+    debtSubmittingLockRef.current = true;
+    setIsSubmittingDebt(true);
+    try {
+      const next = addDebtAction(state, {
+        direction: debtDirection,
+        receivableType: debtDirection === 'receivable' ? receivableType : undefined,
+        debtReceiptType: debtDirection === 'payable' ? debtReceiptType : undefined,
+        accountId:
+          (debtDirection === 'receivable' && receivableType === 'personal_loan') ||
+          (debtDirection === 'payable' && debtReceiptType === 'cash_received')
+            ? resolvedDebtAccountId
+            : undefined,
+        expenseCategoryId:
+          debtDirection === 'payable' && debtReceiptType === 'direct_expense'
+            ? resolvedExpenseCategoryId
+            : undefined,
+        projectId:
+          debtDirection === 'receivable' && receivableType === 'project_sales' && debtProjectId
+            ? debtProjectId
+            : undefined,
+        revenueAlreadyRecorded:
+          debtDirection === 'receivable' && receivableType === 'project_sales'
+            ? debtRevenueAlreadyRecorded
+            : undefined,
+        creditor,
+        description: debtDesc,
+        amount: amt,
+        date: debtDate || todayISO(),
+        dueDate: debtDueDate || undefined,
+        idempotencyKey: debtSubmitKeyRef.current,
+      });
+
+      onCommit(next);
+      debtSubmitKeyRef.current = generateId();
+      setCreditor('');
+      setDebtDesc('');
+      setDebtAmount('');
+      setDebtDueDate('');
+      setDebtProjectId('');
+      setDebtRevenueAlreadyRecorded(false);
+      setShowNewDebt(false);
+    } catch (err) {
+      setDebtFormError(err instanceof Error ? err.message : 'Gagal menyimpan catatan utang/piutang.');
+    } finally {
+      debtSubmittingLockRef.current = false;
+      setIsSubmittingDebt(false);
+    }
   };
 
   const handleSettleDebtOrReceivable = (e: React.FormEvent, item: Debt) => {
     e.preventDefault();
+    if (settleSubmittingLockRef.current) return;
+    setRepayError(null);
+
     const amt = Number(repayAmount) || 0;
-    if (amt <= 0) return;
-    if ((item.direction ?? 'payable') === 'receivable') {
-      onCommit(
-        collectReceivableAction(state, {
-          debtId: item.id,
-          amount: amt,
-          accountId: repayAccId,
-          date: todayISO(),
-        })
-      );
-    } else {
-      onCommit(
-        repayDebtAction(state, {
-          debtId: item.id,
-          amount: amt,
-          accountId: repayAccId,
-          date: todayISO(),
-        })
-      );
+    if (amt <= 0) {
+      setRepayError('Nominal pelunasan harus lebih dari Rp0.');
+      return;
     }
-    setRepayDebtId(null);
-    setRepayAmount('');
+    if (!resolvedRepayAccId) {
+      setRepayError('Akun tujuan/sumber pelunasan wajib dipilih.');
+      return;
+    }
+
+    settleSubmittingLockRef.current = true;
+    setIsSettlingDebt(true);
+    try {
+      if ((item.direction ?? 'payable') === 'receivable') {
+        onCommit(
+          collectReceivableAction(state, {
+            debtId: item.id,
+            amount: amt,
+            accountId: resolvedRepayAccId,
+            date: repayDate || todayISO(),
+            notes: repayNotes,
+            idempotencyKey: settleSubmitKeyRef.current,
+          })
+        );
+      } else {
+        onCommit(
+          repayDebtAction(state, {
+            debtId: item.id,
+            amount: amt,
+            accountId: resolvedRepayAccId,
+            date: repayDate || todayISO(),
+            notes: repayNotes,
+            idempotencyKey: settleSubmitKeyRef.current,
+          })
+        );
+      }
+      settleSubmitKeyRef.current = generateId();
+      setRepayDebtId(null);
+      setRepayAmount('');
+      setRepayNotes('');
+    } catch (err) {
+      setRepayError(err instanceof Error ? err.message : 'Gagal mencatat pelunasan.');
+    } finally {
+      settleSubmittingLockRef.current = false;
+      setIsSettlingDebt(false);
+    }
   };
 
   const handleSaveDebtDue = (e: React.FormEvent, debtId: string) => {
@@ -322,6 +484,7 @@ export const DebtsAndGoalsView: React.FC<DebtsAndGoalsViewProps> = ({
   };
 
   const filteredDebts = state.debts.filter((d) => {
+    if (d.isVoided) return false;
     const dir = d.direction ?? 'payable';
     if (debtFilter === 'payable') return dir === 'payable';
     if (debtFilter === 'receivable') return dir === 'receivable';
@@ -384,11 +547,11 @@ export const DebtsAndGoalsView: React.FC<DebtsAndGoalsViewProps> = ({
               </div>
               <button
                 type="button"
-                onClick={() => setShowNewDebt((v) => !v)}
+                onClick={() => (showNewDebt ? setShowNewDebt(false) : openNewDebtForm())}
                 className="inline-flex items-center gap-1 rounded-lg border border-slate-200 px-3 py-1.5 text-xs font-semibold text-slate-700 hover:bg-slate-50"
               >
                 <Plus className="w-3.5 h-3.5" />
-                <span>Tambah</span>
+                <span>{showNewDebt ? 'Tutup' : 'Tambah'}</span>
               </button>
             </div>
 
@@ -418,15 +581,190 @@ export const DebtsAndGoalsView: React.FC<DebtsAndGoalsViewProps> = ({
             )}
 
             {showNewDebt && (
-              <form onSubmit={handleAddDebt} className="rounded-xl bg-slate-50 p-3.5 space-y-2.5">
-                <select
-                  value={debtDirection}
-                  onChange={(e) => setDebtDirection(e.target.value as DebtDirection)}
-                  className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-xs font-semibold"
-                >
-                  <option value="payable">Utang Saya (Wajib Dibayar)</option>
-                  <option value="receivable">Piutang (Uang Dipinjamkan ke Orang Lain)</option>
-                </select>
+              <form onSubmit={handleAddDebt} className="rounded-xl border border-slate-200 bg-slate-50 p-3.5 space-y-3">
+                <div>
+                  <label className="block text-[11px] font-semibold text-slate-600 mb-1">
+                    Arah Catatan
+                  </label>
+                  <select
+                    value={debtDirection}
+                    onChange={(e) => {
+                      const dir = e.target.value as DebtDirection;
+                      setDebtDirection(dir);
+                      setDebtFormError(null);
+                    }}
+                    className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-xs font-semibold"
+                  >
+                    <option value="payable">Utang Saya</option>
+                    <option value="receivable">Piutang Orang Lain</option>
+                  </select>
+                </div>
+
+                {debtDirection === 'receivable' ? (
+                  <div className="space-y-2.5">
+                    <div>
+                      <label className="block text-[11px] font-semibold text-slate-600 mb-1">
+                        Jenis Piutang <span className="text-red-600">*</span>
+                      </label>
+                      <select
+                        required
+                        value={receivableType}
+                        onChange={(e) => {
+                          setReceivableType(e.target.value as ReceivableKind);
+                          setDebtFormError(null);
+                        }}
+                        className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-xs font-semibold"
+                      >
+                        <option value="personal_loan">Pinjaman Uang Pribadi</option>
+                        <option value="project_sales">Tagihan Proyek / Penjualan</option>
+                      </select>
+                    </div>
+
+                    {receivableType === 'personal_loan' ? (
+                      <div className="space-y-1.5">
+                        <label className="block text-[11px] font-semibold text-slate-600">
+                          Akun Sumber Dana <span className="text-red-600">*</span>
+                        </label>
+                        <select
+                          required
+                          value={resolvedDebtAccountId}
+                          onChange={(e) => {
+                            setDebtAccountId(e.target.value);
+                            setDebtFormError(null);
+                          }}
+                          className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-xs"
+                        >
+                          {activeAccounts.map((a) => (
+                            <option key={a.id} value={a.id}>
+                              {a.name} ({formatIDR(a.currentBalance)})
+                            </option>
+                          ))}
+                        </select>
+                        <p className="flex items-start gap-1.5 text-[11px] text-slate-600">
+                          <Info className="w-3.5 h-3.5 text-[#0976A6] shrink-0 mt-0.5" />
+                          <span>
+                            Saldo akun sumber akan langsung berkurang saat pinjaman dicatat (bukan pengeluaran konsumsi atau anggaran).
+                          </span>
+                        </p>
+                      </div>
+                    ) : (
+                      <div className="space-y-2">
+                        <p className="flex items-start gap-1.5 rounded-lg border border-[#B9E2F5] bg-[#E8F6FC] px-2.5 py-2 text-[11px] text-[#075D83]">
+                          <Info className="w-3.5 h-3.5 shrink-0 mt-0.5" />
+                          <span>
+                            Tagihan proyek / penjualan tidak mengurangi saldo kas dan tidak menambah Safe-to-Spend sebelum pembayaran benar-benar diterima.
+                          </span>
+                        </p>
+                        {activeProjects.length > 0 && (
+                          <div>
+                            <label className="block text-[11px] font-semibold text-slate-600 mb-1">
+                              Tautkan Proyek (Opsional)
+                            </label>
+                            <select
+                              value={debtProjectId}
+                              onChange={(e) => setDebtProjectId(e.target.value)}
+                              className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-xs"
+                            >
+                              <option value="">Tidak ditautkan ke proyek tertentu</option>
+                              {activeProjects.map((p) => (
+                                <option key={p.id} value={p.id}>
+                                  {p.projectName} — {p.clientName}
+                                </option>
+                              ))}
+                            </select>
+                          </div>
+                        )}
+                        <label className="flex items-center gap-2 text-[11px] text-slate-700 cursor-pointer">
+                          <input
+                            type="checkbox"
+                            checked={debtRevenueAlreadyRecorded}
+                            onChange={(e) => setDebtRevenueAlreadyRecorded(e.target.checked)}
+                          />
+                          <span>Pendapatan proyek sudah pernah dicatat sebelumnya (cegah hitung ganda saat ditagih)</span>
+                        </label>
+                      </div>
+                    )}
+                  </div>
+                ) : (
+                  <div className="space-y-2.5">
+                    <div>
+                      <label className="block text-[11px] font-semibold text-slate-600 mb-1">
+                        Jenis Penerimaan Utang <span className="text-red-600">*</span>
+                      </label>
+                      <select
+                        required
+                        value={debtReceiptType}
+                        onChange={(e) => {
+                          setDebtReceiptType(e.target.value as DebtReceiptKind);
+                          setDebtFormError(null);
+                        }}
+                        className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-xs font-semibold"
+                      >
+                        <option value="cash_received">Uang diterima ke akun saya</option>
+                        <option value="direct_expense">
+                          Orang lain membayar pengeluaran saya secara langsung
+                        </option>
+                      </select>
+                    </div>
+
+                    {debtReceiptType === 'cash_received' ? (
+                      <div className="space-y-1.5">
+                        <label className="block text-[11px] font-semibold text-slate-600">
+                          Akun Penerima Dana <span className="text-red-600">*</span>
+                        </label>
+                        <select
+                          required
+                          value={resolvedDebtAccountId}
+                          onChange={(e) => {
+                            setDebtAccountId(e.target.value);
+                            setDebtFormError(null);
+                          }}
+                          className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-xs"
+                        >
+                          {activeAccounts.map((a) => (
+                            <option key={a.id} value={a.id}>
+                              {a.name} ({formatIDR(a.currentBalance)})
+                            </option>
+                          ))}
+                        </select>
+                        <p className="flex items-start gap-1.5 text-[11px] text-slate-600">
+                          <Info className="w-3.5 h-3.5 text-[#0976A6] shrink-0 mt-0.5" />
+                          <span>
+                            Saldo akun terpilih akan bertambah satu kali sebesar dana pinjaman yang diterima.
+                          </span>
+                        </p>
+                      </div>
+                    ) : (
+                      <div className="space-y-1.5">
+                        <label className="block text-[11px] font-semibold text-slate-600">
+                          Kategori Pengeluaran <span className="text-red-600">*</span>
+                        </label>
+                        <select
+                          required
+                          value={resolvedExpenseCategoryId}
+                          onChange={(e) => {
+                            setDebtExpenseCategoryId(e.target.value);
+                            setDebtFormError(null);
+                          }}
+                          className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-xs"
+                        >
+                          {activeExpenseCategories.map((c) => (
+                            <option key={c.id} value={c.id}>
+                              {c.name}
+                            </option>
+                          ))}
+                        </select>
+                        <p className="flex items-start gap-1.5 text-[11px] text-slate-600">
+                          <Info className="w-3.5 h-3.5 text-[#0976A6] shrink-0 mt-0.5" />
+                          <span>
+                            Pengeluaran nyata dicatat pada kategori terpilih sebagai transaksi non-kas dan utang baru dibuat tanpa mengubah saldo tunai/bank.
+                          </span>
+                        </p>
+                      </div>
+                    )}
+                  </div>
+                )}
+
                 <input
                   type="text"
                   required
@@ -434,20 +772,34 @@ export const DebtsAndGoalsView: React.FC<DebtsAndGoalsViewProps> = ({
                   onChange={(e) => setCreditor(e.target.value)}
                   placeholder={
                     debtDirection === 'receivable'
-                      ? 'Nama Peminjam'
-                      : 'Nama Pemberi Pinjaman'
+                      ? receivableType === 'project_sales'
+                        ? 'Nama Klien / Pembeli'
+                        : 'Nama Peminjam'
+                      : 'Nama Pemberi Pinjaman / Pihak Pembayar'
                   }
                   className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-xs"
                 />
-                <div className="grid grid-cols-2 gap-2">
+
+                <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
                   <input
                     type="number"
                     required
                     min={1}
                     value={debtAmount}
-                    onChange={(e) => setDebtAmount(e.target.value)}
+                    onChange={(e) => {
+                      setDebtAmount(e.target.value);
+                      setDebtFormError(null);
+                    }}
                     placeholder="Nominal (Rp)"
                     className="rounded-lg border border-slate-300 bg-white px-3 py-2 text-xs font-mono-num"
+                  />
+                  <input
+                    type="date"
+                    required
+                    value={debtDate}
+                    onChange={(e) => setDebtDate(e.target.value)}
+                    title="Tanggal transaksi"
+                    className="rounded-lg border border-slate-300 bg-white px-3 py-2 text-xs"
                   />
                   <input
                     type="date"
@@ -458,8 +810,9 @@ export const DebtsAndGoalsView: React.FC<DebtsAndGoalsViewProps> = ({
                   />
                 </div>
                 <p className="text-[11px] text-slate-500">
-                  Tanggal jatuh tempo bersifat opsional (kosongkan jika belum ditetapkan).
+                  Kolom tanggal kiri = tanggal kejadian, kolom kanan = jatuh tempo (opsional).
                 </p>
+
                 <input
                   type="text"
                   value={debtDesc}
@@ -467,19 +820,31 @@ export const DebtsAndGoalsView: React.FC<DebtsAndGoalsViewProps> = ({
                   placeholder="Keterangan"
                   className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-xs"
                 />
+
+                {debtFormError && (
+                  <div className="flex items-start gap-2 rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-[11px] font-semibold text-red-700">
+                    <AlertCircle className="w-4 h-4 shrink-0 mt-0.5" />
+                    <span>{debtFormError}</span>
+                  </div>
+                )}
+
                 <div className="flex justify-end gap-2">
                   <button
                     type="button"
-                    onClick={() => setShowNewDebt(false)}
+                    onClick={() => {
+                      setShowNewDebt(false);
+                      setDebtFormError(null);
+                    }}
                     className="rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-xs font-semibold"
                   >
                     Batal
                   </button>
                   <button
                     type="submit"
-                    className="rounded-lg bg-[#0976A6] px-3 py-1.5 text-xs font-semibold text-white"
+                    disabled={isSubmittingDebt}
+                    className="rounded-lg bg-[#0976A6] px-3 py-1.5 text-xs font-semibold text-white disabled:opacity-60"
                   >
-                    Simpan
+                    {isSubmittingDebt ? 'Menyimpan...' : 'Simpan'}
                   </button>
                 </div>
               </form>
@@ -491,7 +856,22 @@ export const DebtsAndGoalsView: React.FC<DebtsAndGoalsViewProps> = ({
                 const paidPct = Math.round(
                   ((d.initialAmount - d.remainingAmount) / Math.max(1, d.initialAmount)) * 100
                 );
-                const payments = state.debtPayments.filter((p) => p.debtId === d.id);
+                const payments = state.debtPayments.filter((p) => p.debtId === d.id && !p.isVoided);
+                const linkedAccName = d.accountId
+                  ? state.accounts.find((a) => a.id === d.accountId)?.name
+                  : undefined;
+
+                const subtypeLabel = isReceivable
+                  ? d.receivableType === 'personal_loan'
+                    ? 'Pinjaman Uang Pribadi'
+                    : d.receivableType === 'project_sales'
+                    ? 'Tagihan Proyek / Penjualan'
+                    : 'Tagihan Proyek / Piutang'
+                  : d.debtReceiptType === 'cash_received'
+                  ? 'Dana Diterima'
+                  : d.debtReceiptType === 'direct_expense'
+                  ? 'Bayar Langsung (Non-Kas)'
+                  : null;
 
                 return (
                   <div key={d.id} className="py-3.5 space-y-2.5">
@@ -507,6 +887,11 @@ export const DebtsAndGoalsView: React.FC<DebtsAndGoalsViewProps> = ({
                           >
                             {isReceivable ? 'Piutang' : 'Utang'}
                           </span>
+                          {subtypeLabel && (
+                            <span className="rounded bg-slate-100 px-1.5 py-0.5 text-[10px] font-semibold text-slate-600">
+                              {subtypeLabel}
+                            </span>
+                          )}
                           <p className="text-sm font-bold text-slate-900">
                             {d.creditor}
                             {d.status === 'paid' && (
@@ -515,7 +900,8 @@ export const DebtsAndGoalsView: React.FC<DebtsAndGoalsViewProps> = ({
                           </p>
                         </div>
                         <p className="text-xs text-slate-500 mt-0.5">
-                          {d.description} ·{' '}
+                          {d.description}
+                          {linkedAccName ? ` · Akun: ${linkedAccName}` : ''} ·{' '}
                           {d.dueDate ? `Jatuh tempo ${formatDateID(d.dueDate)}` : 'Tanpa jatuh tempo'}
                         </p>
                       </div>
@@ -568,6 +954,23 @@ export const DebtsAndGoalsView: React.FC<DebtsAndGoalsViewProps> = ({
                           onClick={() => {
                             setRepayDebtId(d.id);
                             setRepayAmount(String(d.remainingAmount));
+                            setRepayDate(todayISO());
+                            setRepayNotes('');
+                            setRepayError(null);
+                            settleSubmitKeyRef.current = generateId();
+                            settleSubmittingLockRef.current = false;
+
+                            const preferBiz =
+                              isReceivable &&
+                              (d.receivableType === 'project_sales' || !d.receivableType)
+                                ? activeAccounts.find((a) => a.id === 'acc-business')
+                                : undefined;
+                            const preferLinked = d.accountId
+                              ? activeAccounts.find((a) => a.id === d.accountId)
+                              : undefined;
+                            setRepayAccId(
+                              preferBiz?.id ?? preferLinked?.id ?? activeAccounts[0]?.id ?? 'acc-cash'
+                            );
                           }}
                           className={`rounded-lg px-3 py-1.5 text-xs font-semibold text-white ${
                             isReceivable
@@ -615,13 +1018,36 @@ export const DebtsAndGoalsView: React.FC<DebtsAndGoalsViewProps> = ({
                     {repayDebtId === d.id && (
                       <form
                         onSubmit={(e) => handleSettleDebtOrReceivable(e, d)}
-                        className="rounded-xl border border-slate-200 bg-slate-50 p-3 space-y-2"
+                        className="rounded-xl border border-slate-200 bg-slate-50 p-3 space-y-2.5"
                       >
-                        <p className="text-xs font-bold text-slate-900">
-                          {isReceivable
-                            ? 'Terima Pembayaran Piutang ke Akun'
-                            : 'Catat Pembayaran / Cicilan Utang'}
-                        </p>
+                        <div className="flex flex-wrap items-center justify-between gap-2">
+                          <p className="text-xs font-bold text-slate-900">
+                            {isReceivable
+                              ? 'Terima Pembayaran Piutang ke Akun'
+                              : 'Catat Pembayaran / Cicilan Utang'}
+                          </p>
+                          <div className="flex items-center gap-1">
+                            {d.remainingAmount > 1 && (
+                              <button
+                                type="button"
+                                onClick={() =>
+                                  setRepayAmount(String(Math.max(1, Math.floor(d.remainingAmount / 2))))
+                                }
+                                className="rounded border border-slate-200 bg-white px-2 py-0.5 text-[10px] font-semibold text-slate-700 hover:bg-slate-100"
+                              >
+                                Sebagian (50%)
+                              </button>
+                            )}
+                            <button
+                              type="button"
+                              onClick={() => setRepayAmount(String(d.remainingAmount))}
+                              className="rounded border border-slate-200 bg-white px-2 py-0.5 text-[10px] font-semibold text-slate-700 hover:bg-slate-100"
+                            >
+                              Lunasi Penuh
+                            </button>
+                          </div>
+                        </div>
+
                         <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
                           <input
                             type="number"
@@ -629,52 +1055,143 @@ export const DebtsAndGoalsView: React.FC<DebtsAndGoalsViewProps> = ({
                             min={1}
                             max={d.remainingAmount}
                             value={repayAmount}
-                            onChange={(e) => setRepayAmount(e.target.value)}
+                            onChange={(e) => {
+                              setRepayAmount(e.target.value);
+                              setRepayError(null);
+                            }}
                             placeholder="Nominal"
                             className="rounded-lg border border-slate-300 bg-white px-3 py-2 text-xs font-mono-num"
                           />
                           <select
-                            value={repayAccId}
-                            onChange={(e) => setRepayAccId(e.target.value)}
+                            required
+                            value={resolvedRepayAccId}
+                            onChange={(e) => {
+                              setRepayAccId(e.target.value);
+                              setRepayError(null);
+                            }}
                             className="rounded-lg border border-slate-300 bg-white px-3 py-2 text-xs"
                           >
-                            {personalActiveLiquid.map((a) => (
+                            {activeAccounts.map((a) => (
                               <option key={a.id} value={a.id}>
                                 {a.name} ({formatIDR(a.currentBalance)})
                               </option>
                             ))}
                           </select>
                         </div>
+
+                        <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                          <input
+                            type="date"
+                            value={repayDate}
+                            onChange={(e) => setRepayDate(e.target.value)}
+                            className="rounded-lg border border-slate-300 bg-white px-3 py-1.5 text-xs"
+                          />
+                          <input
+                            type="text"
+                            value={repayNotes}
+                            onChange={(e) => setRepayNotes(e.target.value)}
+                            placeholder="Catatan pembayaran (opsional)"
+                            className="rounded-lg border border-slate-300 bg-white px-3 py-1.5 text-xs"
+                          />
+                        </div>
+
+                        {repayError && (
+                          <div className="flex items-start gap-2 rounded-lg border border-red-200 bg-red-50 px-2.5 py-2 text-[11px] font-semibold text-red-700">
+                            <AlertCircle className="w-4 h-4 shrink-0 mt-0.5" />
+                            <span>{repayError}</span>
+                          </div>
+                        )}
+
                         <div className="flex justify-end gap-2">
                           <button
                             type="button"
-                            onClick={() => setRepayDebtId(null)}
+                            onClick={() => {
+                              setRepayDebtId(null);
+                              setRepayError(null);
+                            }}
                             className="rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-xs font-semibold"
                           >
                             Batal
                           </button>
                           <button
                             type="submit"
-                            className="rounded-lg bg-emerald-700 px-3 py-1.5 text-xs font-semibold text-white"
+                            disabled={isSettlingDebt}
+                            className="rounded-lg bg-emerald-700 px-3 py-1.5 text-xs font-semibold text-white disabled:opacity-60"
                           >
-                            {isReceivable ? 'Catat Penerimaan' : 'Catat Pembayaran'}
+                            {isSettlingDebt
+                              ? 'Memproses...'
+                              : isReceivable
+                              ? 'Catat Penerimaan'
+                              : 'Catat Pembayaran'}
                           </button>
                         </div>
                       </form>
                     )}
 
                     {debtHistoryId === d.id && (
-                      <div className="rounded-xl border border-slate-200 bg-slate-50 p-3 space-y-1 text-xs">
+                      <div className="rounded-xl border border-slate-200 bg-slate-50 p-3 space-y-2 text-xs">
                         <p className="font-bold text-slate-800">Riwayat Pelunasan</p>
-                        {payments.length === 0 ? (
+                        {debtHistoryError && (
+                          <div className="rounded-lg border border-red-200 bg-red-50 px-2.5 py-1.5 text-[11px] font-semibold text-red-700">
+                            {debtHistoryError}
+                          </div>
+                        )}
+                        {state.debtPayments.filter((p) => p.debtId === d.id).length === 0 ? (
                           <p className="text-slate-500">Belum ada pembayaran tercatat.</p>
                         ) : (
-                          payments.map((p) => (
-                            <div key={p.id} className="flex justify-between py-1 border-b border-slate-200/70 last:border-0">
-                              <span>{formatDateID(p.date)} {p.notes ? `· ${p.notes}` : ''}</span>
-                              <span className="font-mono-num font-bold">{formatIDR(p.amount)}</span>
-                            </div>
-                          ))
+                          state.debtPayments
+                            .filter((p) => p.debtId === d.id)
+                            .map((p) => {
+                              const payAccName = state.accounts.find((a) => a.id === p.accountId)?.name;
+                              return (
+                                <div
+                                  key={p.id}
+                                  className="flex items-center justify-between gap-2 py-1 border-b border-slate-200/70 last:border-0"
+                                >
+                                  <span className={p.isVoided ? 'line-through text-slate-400' : ''}>
+                                    {formatDateID(p.date)}
+                                    {payAccName ? ` · ${payAccName}` : ''}
+                                    {p.notes ? ` · ${p.notes}` : ''}
+                                    {p.isVoided ? ' (VOID)' : ''}
+                                  </span>
+                                  <div className="flex items-center gap-2 shrink-0">
+                                    <span
+                                      className={`font-mono-num font-bold ${
+                                        p.isVoided ? 'line-through text-slate-400' : ''
+                                      }`}
+                                    >
+                                      {formatIDR(p.amount)}
+                                    </span>
+                                    {!p.isVoided && (
+                                      <button
+                                        type="button"
+                                        onClick={() => {
+                                          setDebtHistoryError(null);
+                                          try {
+                                            onCommit(
+                                              voidDebtPaymentAction(
+                                                state,
+                                                p.id,
+                                                'Pembatalan pembayaran dari riwayat utang/piutang'
+                                              )
+                                            );
+                                          } catch (err) {
+                                            setDebtHistoryError(
+                                              err instanceof Error
+                                                ? err.message
+                                                : 'Gagal membatalkan pembayaran.'
+                                            );
+                                          }
+                                        }}
+                                        className="rounded border border-amber-200 bg-amber-50 px-2 py-0.5 text-[10px] font-semibold text-amber-800 hover:bg-amber-100"
+                                      >
+                                        Batalkan
+                                      </button>
+                                    )}
+                                  </div>
+                                </div>
+                              );
+                            })
                         )}
                       </div>
                     )}
