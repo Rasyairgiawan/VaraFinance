@@ -34,7 +34,8 @@ interface CalendarAndRemindersViewProps {
 
 const EVENT_META: Record<CalendarEventType, { label: string; dot: string; badge: string }> = {
   income: { label: 'Pemasukan Aktual', dot: 'bg-emerald-600', badge: 'text-emerald-800 bg-emerald-50 border-emerald-200' },
-  expense: { label: 'Pengeluaran', dot: 'bg-slate-700', badge: 'text-slate-800 bg-slate-50 border-slate-200' },
+  expense: { label: 'Pengeluaran Kas', dot: 'bg-slate-700', badge: 'text-slate-800 bg-slate-50 border-slate-200' },
+  non_cash: { label: 'Transaksi Non-Kas', dot: 'bg-violet-500', badge: 'text-violet-800 bg-violet-50 border-violet-200' },
   debt_due: { label: 'Jatuh Tempo Utang', dot: 'bg-red-600', badge: 'text-red-800 bg-red-50 border-red-200' },
   receivable_due: { label: 'Jatuh Tempo Piutang', dot: 'bg-[#0976A6]', badge: 'text-[#075D83] bg-[#E8F6FC] border-[#B9E2F5]' },
   obligation_due: { label: 'Kewajiban Rutin', dot: 'bg-[#0C8FC5]', badge: 'text-[#075D83] bg-[#E8F6FC] border-[#B9E2F5]' },
@@ -42,6 +43,7 @@ const EVENT_META: Record<CalendarEventType, { label: string; dot: string; badge:
   freelance_expected: { label: 'Jadwal Bayar Freelance', dot: 'bg-amber-500', badge: 'text-amber-800 bg-amber-50 border-amber-200' },
   goal_contribution: { label: 'Setoran Tabungan', dot: 'bg-teal-600', badge: 'text-teal-800 bg-teal-50 border-teal-200' },
   no_spend_confirmed: { label: 'Hari Tanpa Jajan', dot: 'bg-emerald-500', badge: 'text-emerald-800 bg-emerald-50 border-emerald-200' },
+  asset_loan_due: { label: 'Pengembalian Barang Fisik', dot: 'bg-cyan-600', badge: 'text-cyan-900 bg-cyan-50 border-cyan-200' },
   custom_reminder: { label: 'Pengingat Pribadi', dot: 'bg-indigo-600', badge: 'text-indigo-800 bg-indigo-50 border-indigo-200' },
 };
 

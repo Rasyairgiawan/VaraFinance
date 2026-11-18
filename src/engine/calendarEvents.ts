@@ -1,9 +1,12 @@
 import { FinanceState } from '../types/finance';
 import { addDaysISO, daysInMonth } from '../utils/format';
 
+import { getTransactionNatureLabel } from '../utils/transactionDisplay';
+
 export type CalendarEventType =
   | 'income'
   | 'expense'
+  | 'non_cash'
   | 'debt_due'
   | 'receivable_due'
   | 'obligation_due'
@@ -11,6 +14,7 @@ export type CalendarEventType =
   | 'freelance_expected'
   | 'goal_contribution'
   | 'no_spend_confirmed'
+  | 'asset_loan_due'
   | 'custom_reminder';
 
 export interface CalendarEventItem {
@@ -37,18 +41,29 @@ export function buildCalendarEventsForMonth(
     map.set(ev.date, arr);
   };
 
-  // 1. Actual Income & Expenses (exclude voided)
+  // 1. Actual Income, Expenses, and Non-Cash Accounting Entries (exclude voided)
   for (const tx of state.transactions) {
     if (tx.isVoided) continue;
     if (tx.date >= monthStart && tx.date <= monthEnd) {
       const cat = state.categories.find((c) => c.id === tx.categoryId)?.name;
+      const isNonCash = tx.affectsAccountBalance === false;
+      const natureLabel =
+        tx.transactionNature && tx.transactionNature !== 'standard'
+          ? getTransactionNatureLabel(tx)
+          : undefined;
+      const detailParts = [
+        cat,
+        natureLabel,
+        isNonCash ? 'Tidak mengubah saldo kas' : undefined,
+      ].filter(Boolean);
+
       push({
         id: `tx-${tx.id}`,
         date: tx.date,
-        type: tx.type === 'income' ? 'income' : 'expense',
+        type: isNonCash ? 'non_cash' : tx.type === 'income' ? 'income' : 'expense',
         title: tx.description,
         amount: tx.amount,
-        detail: cat,
+        detail: detailParts.length > 0 ? detailParts.join(' · ') : undefined,
       });
     }
   }
@@ -152,7 +167,32 @@ export function buildCalendarEventsForMonth(
     }
   }
 
-  // 7. Custom Reminders
+  // 7. Physical Item Lending Return Deadlines
+  for (const loan of state.physicalItemLoans ?? []) {
+    if (
+      !loan.isVoided &&
+      !loan.deletedAt &&
+      loan.status === 'active' &&
+      loan.expectedReturnDate &&
+      loan.expectedReturnDate >= monthStart &&
+      loan.expectedReturnDate <= monthEnd
+    ) {
+      const isLent = loan.direction === 'lent';
+      push({
+        id: `loan-${loan.id}`,
+        date: loan.expectedReturnDate,
+        type: 'asset_loan_due',
+        title: isLent
+          ? `Pengembalian aset dipinjamkan: ${loan.itemName}`
+          : `Kembalikan barang pinjaman: ${loan.itemName}`,
+        detail: isLent
+          ? `Peminjam: ${loan.counterpartyName}`
+          : `Pemilik: ${loan.counterpartyName}`,
+      });
+    }
+  }
+
+  // 8. Custom Reminders
   for (const cr of state.settings.reminderSettings?.customReminders ?? []) {
     if (cr.enabled && cr.date >= monthStart && cr.date <= monthEnd) {
       push({

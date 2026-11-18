@@ -23,13 +23,16 @@ import {
   archiveObligationAction,
   collectReceivableAction,
   contributeToGoalAction,
+  createLinkedBorrowLendAction,
   payObligationAction,
   reallocateCompletedObligationAction,
+  recoverReceivableAction,
   repayDebtAction,
   reserveObligationAction,
   updateDebtAction,
   updateObligationAction,
   voidDebtPaymentAction,
+  writeOffReceivableAction,
 } from '../hooks/financeActions';
 import {
   Debt,
@@ -76,10 +79,14 @@ export const DebtsAndGoalsView: React.FC<DebtsAndGoalsViewProps> = ({
   // Debts & Receivables
   const [debtFilter, setDebtFilter] = useState<'all' | 'payable' | 'receivable'>('all');
   const [showNewDebt, setShowNewDebt] = useState(false);
+  const [debtFormMode, setDebtFormMode] = useState<'payable' | 'receivable' | 'linked_borrow_lend'>('payable');
   const [debtDirection, setDebtDirection] = useState<DebtDirection>('payable');
   const [receivableType, setReceivableType] = useState<ReceivableKind>('personal_loan');
   const [debtReceiptType, setDebtReceiptType] = useState<DebtReceiptKind>('cash_received');
   const [debtAccountId, setDebtAccountId] = useState('acc-cash');
+  const [debtDisburseAccountId, setDebtDisburseAccountId] = useState('acc-cash');
+  const [linkedBorrowLendMode, setLinkedBorrowLendMode] = useState<'direct_passthrough' | 'via_account'>('direct_passthrough');
+  const [borrowerName, setBorrowerName] = useState('');
   const [debtExpenseCategoryId, setDebtExpenseCategoryId] = useState('cat-food');
   const [debtProjectId, setDebtProjectId] = useState('');
   const [debtRevenueAlreadyRecorded, setDebtRevenueAlreadyRecorded] = useState(false);
@@ -88,6 +95,7 @@ export const DebtsAndGoalsView: React.FC<DebtsAndGoalsViewProps> = ({
   const [debtDesc, setDebtDesc] = useState('');
   const [debtAmount, setDebtAmount] = useState('');
   const [debtDueDate, setDebtDueDate] = useState('');
+  const [linkedReceivableDueDate, setLinkedReceivableDueDate] = useState('');
   const [debtFormError, setDebtFormError] = useState<string | null>(null);
   const [isSubmittingDebt, setIsSubmittingDebt] = useState(false);
   const debtSubmitKeyRef = useRef<string>(generateId());
@@ -98,6 +106,9 @@ export const DebtsAndGoalsView: React.FC<DebtsAndGoalsViewProps> = ({
   const [repayAccId, setRepayAccId] = useState('acc-cash');
   const [repayDate, setRepayDate] = useState(todayISO());
   const [repayNotes, setRepayNotes] = useState('');
+  const [writeOffDebtId, setWriteOffDebtId] = useState<string | null>(null);
+  const [writeOffReason, setWriteOffReason] = useState('');
+  const [writeOffActionError, setWriteOffActionError] = useState<string | null>(null);
   const [repayError, setRepayError] = useState<string | null>(null);
   const [isSettlingDebt, setIsSettlingDebt] = useState(false);
   const settleSubmitKeyRef = useRef<string>(generateId());
@@ -167,14 +178,21 @@ export const DebtsAndGoalsView: React.FC<DebtsAndGoalsViewProps> = ({
 
   const openNewDebtForm = () => {
     setDebtFormError(null);
+    setDebtFormMode('payable');
+    setDebtDirection('payable');
+    setReceivableType('personal_loan');
+    setLinkedBorrowLendMode('direct_passthrough');
     setCreditor('');
+    setBorrowerName('');
     setDebtDesc('');
     setDebtAmount('');
     setDebtDueDate('');
+    setLinkedReceivableDueDate('');
     setDebtDate(todayISO());
     setDebtProjectId('');
     setDebtRevenueAlreadyRecorded(false);
     setDebtAccountId(activeAccounts[0]?.id ?? 'acc-cash');
+    setDebtDisburseAccountId(activeAccounts[0]?.id ?? 'acc-cash');
     setDebtExpenseCategoryId(
       activeExpenseCategories.find((c) => c.id === 'cat-food')?.id ??
         activeExpenseCategories[0]?.id ??
@@ -191,6 +209,52 @@ export const DebtsAndGoalsView: React.FC<DebtsAndGoalsViewProps> = ({
     setDebtFormError(null);
 
     const amt = Number(debtAmount) || 0;
+    if (debtFormMode === 'linked_borrow_lend') {
+      if (!creditor.trim() || !borrowerName.trim()) {
+        setDebtFormError('Nama pemberi pinjaman (A) dan penerima pinjaman (B) wajib diisi.');
+        return;
+      }
+      if (amt <= 0) {
+        setDebtFormError('Nominal harus lebih dari Rp0.');
+        return;
+      }
+      debtSubmittingLockRef.current = true;
+      setIsSubmittingDebt(true);
+      try {
+        const { state: next } = createLinkedBorrowLendAction(state, {
+          lenderName: creditor,
+          borrowerName,
+          amount: amt,
+          date: debtDate || todayISO(),
+          dueDatePayable: debtDueDate || undefined,
+          dueDateReceivable: linkedReceivableDueDate || undefined,
+          description: debtDesc,
+          mode: linkedBorrowLendMode,
+          receiveAccountId: linkedBorrowLendMode === 'via_account' ? resolvedDebtAccountId : undefined,
+          disburseAccountId:
+            linkedBorrowLendMode === 'via_account' ? debtDisburseAccountId || resolvedDebtAccountId : undefined,
+          idempotencyKey: debtSubmitKeyRef.current,
+        });
+        onCommit(next);
+        debtSubmitKeyRef.current = generateId();
+        setCreditor('');
+        setBorrowerName('');
+        setDebtDesc('');
+        setDebtAmount('');
+        setDebtDueDate('');
+        setLinkedReceivableDueDate('');
+        setShowNewDebt(false);
+      } catch (err) {
+        setDebtFormError(
+          err instanceof Error ? err.message : 'Gagal mencatat pinjaman berantai A → B.'
+        );
+      } finally {
+        debtSubmittingLockRef.current = false;
+        setIsSubmittingDebt(false);
+      }
+      return;
+    }
+
     if (!creditor.trim()) {
       setDebtFormError(
         debtDirection === 'receivable'
@@ -204,7 +268,10 @@ export const DebtsAndGoalsView: React.FC<DebtsAndGoalsViewProps> = ({
       return;
     }
 
-    if (debtDirection === 'receivable' && receivableType === 'personal_loan') {
+    if (
+      debtDirection === 'receivable' &&
+      (receivableType === 'personal_loan' || receivableType === 'friend_advance')
+    ) {
       if (!resolvedDebtAccountId) {
         setDebtFormError('Akun sumber dana wajib dipilih.');
         return;
@@ -212,7 +279,7 @@ export const DebtsAndGoalsView: React.FC<DebtsAndGoalsViewProps> = ({
       const sourceAcc = activeAccounts.find((a) => a.id === resolvedDebtAccountId);
       if (sourceAcc && sourceAcc.currentBalance < Math.round(amt)) {
         setDebtFormError(
-          `Saldo akun "${sourceAcc.name}" (${formatIDR(sourceAcc.currentBalance)}) tidak mencukupi untuk memberikan pinjaman sebesar ${formatIDR(amt)}.`
+          `Saldo akun "${sourceAcc.name}" (${formatIDR(sourceAcc.currentBalance)}) tidak mencukupi sebesar ${formatIDR(amt)}.`
         );
         return;
       }
@@ -236,7 +303,8 @@ export const DebtsAndGoalsView: React.FC<DebtsAndGoalsViewProps> = ({
         receivableType: debtDirection === 'receivable' ? receivableType : undefined,
         debtReceiptType: debtDirection === 'payable' ? debtReceiptType : undefined,
         accountId:
-          (debtDirection === 'receivable' && receivableType === 'personal_loan') ||
+          (debtDirection === 'receivable' &&
+            (receivableType === 'personal_loan' || receivableType === 'friend_advance')) ||
           (debtDirection === 'payable' && debtReceiptType === 'cash_received')
             ? resolvedDebtAccountId
             : undefined,
@@ -584,23 +652,105 @@ export const DebtsAndGoalsView: React.FC<DebtsAndGoalsViewProps> = ({
               <form onSubmit={handleAddDebt} className="rounded-xl border border-slate-200 bg-slate-50 p-3.5 space-y-3">
                 <div>
                   <label className="block text-[11px] font-semibold text-slate-600 mb-1">
-                    Arah Catatan
+                    Jenis Catatan
                   </label>
                   <select
-                    value={debtDirection}
+                    value={debtFormMode}
                     onChange={(e) => {
-                      const dir = e.target.value as DebtDirection;
-                      setDebtDirection(dir);
+                      const mode = e.target.value as 'payable' | 'receivable' | 'linked_borrow_lend';
+                      setDebtFormMode(mode);
+                      if (mode === 'payable' || mode === 'receivable') {
+                        setDebtDirection(mode);
+                      }
                       setDebtFormError(null);
                     }}
                     className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-xs font-semibold"
                   >
                     <option value="payable">Utang Saya</option>
                     <option value="receivable">Piutang Orang Lain</option>
+                    <option value="linked_borrow_lend">Pinjam dari A → Teruskan ke B</option>
                   </select>
                 </div>
 
-                {debtDirection === 'receivable' ? (
+                {debtFormMode === 'linked_borrow_lend' ? (
+                  <div className="space-y-2.5">
+                    <div>
+                      <label className="block text-[11px] font-semibold text-slate-600 mb-1">
+                        Skema Arus Kas
+                      </label>
+                      <select
+                        value={linkedBorrowLendMode}
+                        onChange={(e) =>
+                          setLinkedBorrowLendMode(e.target.value as 'direct_passthrough' | 'via_account')
+                        }
+                        className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-xs font-semibold"
+                      >
+                        <option value="direct_passthrough">Langsung Diteruskan A → B (Non-Kas / Saldo Net Rp0)</option>
+                        <option value="via_account">Masuk &amp; Keluar Melalui Akun Kas/Bank</option>
+                      </select>
+                    </div>
+                    {linkedBorrowLendMode === 'via_account' && (
+                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                        <div>
+                          <label className="block text-[11px] font-semibold text-slate-600 mb-1">
+                            Akun Terima dari A
+                          </label>
+                          <select
+                            value={resolvedDebtAccountId}
+                            onChange={(e) => setDebtAccountId(e.target.value)}
+                            className="w-full rounded-lg border border-slate-300 bg-white px-2.5 py-2 text-xs"
+                          >
+                            {activeAccounts.map((a) => (
+                              <option key={a.id} value={a.id}>
+                                {a.name} ({formatIDR(a.currentBalance)})
+                              </option>
+                            ))}
+                          </select>
+                        </div>
+                        <div>
+                          <label className="block text-[11px] font-semibold text-slate-600 mb-1">
+                            Akun Salur ke B
+                          </label>
+                          <select
+                            value={debtDisburseAccountId}
+                            onChange={(e) => setDebtDisburseAccountId(e.target.value)}
+                            className="w-full rounded-lg border border-slate-300 bg-white px-2.5 py-2 text-xs"
+                          >
+                            {activeAccounts.map((a) => (
+                              <option key={a.id} value={a.id}>
+                                {a.name} ({formatIDR(a.currentBalance)})
+                              </option>
+                            ))}
+                          </select>
+                        </div>
+                      </div>
+                    )}
+                    <p className="flex items-start gap-1.5 rounded-lg border border-[#B9E2F5] bg-[#E8F6FC] px-2.5 py-2 text-[11px] text-[#075D83]">
+                      <Info className="w-3.5 h-3.5 shrink-0 mt-0.5" />
+                      <span>
+                        Membuat pasangan <strong>Utang ke A</strong> &amp; <strong>Piutang dari B</strong> yang tertaut. Pelunasan atau gagal bayar B tidak pernah menghapus kewajiban Anda kepada A.
+                      </span>
+                    </p>
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                      <input
+                        type="text"
+                        required
+                        value={creditor}
+                        onChange={(e) => setCreditor(e.target.value)}
+                        placeholder="Pemberi Pinjaman (A)"
+                        className="rounded-lg border border-slate-300 bg-white px-3 py-2 text-xs"
+                      />
+                      <input
+                        type="text"
+                        required
+                        value={borrowerName}
+                        onChange={(e) => setBorrowerName(e.target.value)}
+                        placeholder="Penerima Pinjaman (B)"
+                        className="rounded-lg border border-slate-300 bg-white px-3 py-2 text-xs"
+                      />
+                    </div>
+                  </div>
+                ) : debtDirection === 'receivable' ? (
                   <div className="space-y-2.5">
                     <div>
                       <label className="block text-[11px] font-semibold text-slate-600 mb-1">
@@ -616,11 +766,12 @@ export const DebtsAndGoalsView: React.FC<DebtsAndGoalsViewProps> = ({
                         className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-xs font-semibold"
                       >
                         <option value="personal_loan">Pinjaman Uang Pribadi</option>
+                        <option value="friend_advance">Talangan Kebutuhan Teman</option>
                         <option value="project_sales">Tagihan Proyek / Penjualan</option>
                       </select>
                     </div>
 
-                    {receivableType === 'personal_loan' ? (
+                    {receivableType === 'personal_loan' || receivableType === 'friend_advance' ? (
                       <div className="space-y-1.5">
                         <label className="block text-[11px] font-semibold text-slate-600">
                           Akun Sumber Dana <span className="text-red-600">*</span>
@@ -643,7 +794,7 @@ export const DebtsAndGoalsView: React.FC<DebtsAndGoalsViewProps> = ({
                         <p className="flex items-start gap-1.5 text-[11px] text-slate-600">
                           <Info className="w-3.5 h-3.5 text-[#0976A6] shrink-0 mt-0.5" />
                           <span>
-                            Saldo akun sumber akan langsung berkurang saat pinjaman dicatat (bukan pengeluaran konsumsi atau anggaran).
+                            Saldo akun sumber akan langsung berkurang saat dicatat (bukan pengeluaran konsumsi atau anggaran).
                           </span>
                         </p>
                       </div>
@@ -765,22 +916,26 @@ export const DebtsAndGoalsView: React.FC<DebtsAndGoalsViewProps> = ({
                   </div>
                 )}
 
-                <input
-                  type="text"
-                  required
-                  value={creditor}
-                  onChange={(e) => setCreditor(e.target.value)}
-                  placeholder={
-                    debtDirection === 'receivable'
-                      ? receivableType === 'project_sales'
-                        ? 'Nama Klien / Pembeli'
-                        : 'Nama Peminjam'
-                      : 'Nama Pemberi Pinjaman / Pihak Pembayar'
-                  }
-                  className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-xs"
-                />
+                {debtFormMode !== 'linked_borrow_lend' && (
+                  <input
+                    type="text"
+                    required
+                    value={creditor}
+                    onChange={(e) => setCreditor(e.target.value)}
+                    placeholder={
+                      debtDirection === 'receivable'
+                        ? receivableType === 'project_sales'
+                          ? 'Nama Klien / Pembeli'
+                          : receivableType === 'friend_advance'
+                          ? 'Nama Teman'
+                          : 'Nama Peminjam'
+                        : 'Nama Pemberi Pinjaman / Pihak Pembayar'
+                    }
+                    className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-xs"
+                  />
+                )}
 
-                <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
+                <div className={`grid grid-cols-1 ${debtFormMode === 'linked_borrow_lend' ? 'sm:grid-cols-2' : 'sm:grid-cols-3'} gap-2`}>
                   <input
                     type="number"
                     required
@@ -805,12 +960,23 @@ export const DebtsAndGoalsView: React.FC<DebtsAndGoalsViewProps> = ({
                     type="date"
                     value={debtDueDate}
                     onChange={(e) => setDebtDueDate(e.target.value)}
-                    title="Tanggal jatuh tempo (opsional)"
+                    title={debtFormMode === 'linked_borrow_lend' ? 'Jatuh tempo bayar ke A (opsional)' : 'Tanggal jatuh tempo (opsional)'}
                     className="rounded-lg border border-slate-300 bg-white px-3 py-2 text-xs"
                   />
+                  {debtFormMode === 'linked_borrow_lend' && (
+                    <input
+                      type="date"
+                      value={linkedReceivableDueDate}
+                      onChange={(e) => setLinkedReceivableDueDate(e.target.value)}
+                      title="Jatuh tempo tagih dari B (opsional)"
+                      className="rounded-lg border border-slate-300 bg-white px-3 py-2 text-xs"
+                    />
+                  )}
                 </div>
                 <p className="text-[11px] text-slate-500">
-                  Kolom tanggal kiri = tanggal kejadian, kolom kanan = jatuh tempo (opsional).
+                  {debtFormMode === 'linked_borrow_lend'
+                    ? 'Tanggal: kiri atas = tanggal transaksi, kiri/kanan bawah = jatuh tempo ke A & jatuh tempo dari B (opsional).'
+                    : 'Kolom tanggal kiri = tanggal kejadian, kolom kanan = jatuh tempo (opsional).'}
                 </p>
 
                 <input
@@ -864,6 +1030,14 @@ export const DebtsAndGoalsView: React.FC<DebtsAndGoalsViewProps> = ({
                 const subtypeLabel = isReceivable
                   ? d.receivableType === 'personal_loan'
                     ? 'Pinjaman Uang Pribadi'
+                    : d.receivableType === 'friend_advance'
+                    ? 'Talangan Teman'
+                    : d.receivableType === 'split_bill'
+                    ? 'Split Bill'
+                    : d.receivableType === 'project_reimbursement'
+                    ? d.reimbursementKind === 'pass_through'
+                      ? 'Pass-Through Proyek'
+                      : 'Reimbursement Proyek'
                     : d.receivableType === 'project_sales'
                     ? 'Tagihan Proyek / Penjualan'
                     : 'Tagihan Proyek / Piutang'
@@ -872,6 +1046,9 @@ export const DebtsAndGoalsView: React.FC<DebtsAndGoalsViewProps> = ({
                   : d.debtReceiptType === 'direct_expense'
                   ? 'Bayar Langsung (Non-Kas)'
                   : null;
+                const linkedCounterpart = d.linkedDebtId
+                  ? state.debts.find((other) => other.id === d.linkedDebtId)
+                  : undefined;
 
                 return (
                   <div key={d.id} className="py-3.5 space-y-2.5">
@@ -892,10 +1069,18 @@ export const DebtsAndGoalsView: React.FC<DebtsAndGoalsViewProps> = ({
                               {subtypeLabel}
                             </span>
                           )}
+                          {linkedCounterpart && (
+                            <span className="rounded bg-violet-50 border border-violet-200 px-1.5 py-0.5 text-[10px] font-semibold text-violet-700">
+                              Terhubung ↔ {linkedCounterpart.direction === 'receivable' ? 'Piutang' : 'Utang'} {linkedCounterpart.creditor} (Mandiri)
+                            </span>
+                          )}
                           <p className="text-sm font-bold text-slate-900">
                             {d.creditor}
                             {d.status === 'paid' && (
                               <span className="ml-2 text-xs font-semibold text-emerald-700">(Lunas)</span>
+                            )}
+                            {d.status === 'written_off' && (
+                              <span className="ml-2 text-xs font-semibold text-amber-700">(Dihapusbuku)</span>
                             )}
                           </p>
                         </div>
@@ -908,10 +1093,14 @@ export const DebtsAndGoalsView: React.FC<DebtsAndGoalsViewProps> = ({
                       <div className="text-right shrink-0">
                         <p
                           className={`font-mono-num text-sm font-extrabold ${
-                            isReceivable ? 'text-[#0976A6]' : 'text-red-700'
+                            d.status === 'written_off'
+                              ? 'text-amber-700'
+                              : isReceivable
+                              ? 'text-[#0976A6]'
+                              : 'text-red-700'
                           }`}
                         >
-                          {formatIDR(d.remainingAmount)}
+                          {formatIDR(d.status === 'written_off' ? d.writtenOffAmount ?? 0 : d.remainingAmount)}
                         </p>
                         <p className="text-[11px] text-slate-400 font-mono-num">
                           dari {formatIDR(d.initialAmount)}
@@ -944,44 +1133,137 @@ export const DebtsAndGoalsView: React.FC<DebtsAndGoalsViewProps> = ({
                           className="inline-flex items-center gap-1 rounded-lg border border-slate-200 px-2.5 py-1 text-[11px] font-semibold text-slate-600"
                         >
                           <History className="w-3 h-3" />
-                          <span>({payments.length})</span>
+                          <span>({payments.length + (d.writeOffHistory?.length ?? 0)})</span>
                         </button>
                       </div>
 
-                      {d.status === 'active' && (
-                        <button
-                          type="button"
-                          onClick={() => {
-                            setRepayDebtId(d.id);
-                            setRepayAmount(String(d.remainingAmount));
-                            setRepayDate(todayISO());
-                            setRepayNotes('');
-                            setRepayError(null);
-                            settleSubmitKeyRef.current = generateId();
-                            settleSubmittingLockRef.current = false;
+                      <div className="flex flex-wrap items-center gap-1.5">
+                        {d.status === 'active' && isReceivable && (
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setWriteOffDebtId(writeOffDebtId === d.id ? null : d.id);
+                              setWriteOffReason('');
+                              setWriteOffActionError(null);
+                            }}
+                            className="rounded-lg border border-amber-200 bg-amber-50 px-2.5 py-1.5 text-[11px] font-semibold text-amber-800 hover:bg-amber-100"
+                          >
+                            Hapus Buku
+                          </button>
+                        )}
+                        {d.status === 'written_off' && isReceivable && (
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setWriteOffActionError(null);
+                              try {
+                                onCommit(
+                                  recoverReceivableAction(state, {
+                                    debtId: d.id,
+                                    date: todayISO(),
+                                    reason: 'Pemulihan piutang dari riwayat piutang',
+                                  })
+                                );
+                              } catch (err) {
+                                setWriteOffActionError(
+                                  err instanceof Error ? err.message : 'Gagal memulihkan piutang.'
+                                );
+                              }
+                            }}
+                            className="rounded-lg border border-emerald-200 bg-emerald-50 px-2.5 py-1.5 text-[11px] font-semibold text-emerald-800 hover:bg-emerald-100"
+                          >
+                            Pulihkan Piutang
+                          </button>
+                        )}
+                        {d.status === 'active' && (
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setRepayDebtId(d.id);
+                              setRepayAmount(String(d.remainingAmount));
+                              setRepayDate(todayISO());
+                              setRepayNotes('');
+                              setRepayError(null);
+                              settleSubmitKeyRef.current = generateId();
+                              settleSubmittingLockRef.current = false;
 
-                            const preferBiz =
-                              isReceivable &&
-                              (d.receivableType === 'project_sales' || !d.receivableType)
-                                ? activeAccounts.find((a) => a.id === 'acc-business')
+                              const preferBiz =
+                                isReceivable &&
+                                (d.receivableType === 'project_sales' || !d.receivableType)
+                                  ? activeAccounts.find((a) => a.id === 'acc-business')
+                                  : undefined;
+                              const preferLinked = d.accountId
+                                ? activeAccounts.find((a) => a.id === d.accountId)
                                 : undefined;
-                            const preferLinked = d.accountId
-                              ? activeAccounts.find((a) => a.id === d.accountId)
-                              : undefined;
-                            setRepayAccId(
-                              preferBiz?.id ?? preferLinked?.id ?? activeAccounts[0]?.id ?? 'acc-cash'
-                            );
-                          }}
-                          className={`rounded-lg px-3 py-1.5 text-xs font-semibold text-white ${
-                            isReceivable
-                              ? 'bg-[#0976A6] hover:bg-[#075D83]'
-                              : 'bg-slate-900 hover:bg-slate-800'
-                          }`}
-                        >
-                          {isReceivable ? 'Terima Pelunasan' : 'Cicil / Lunasi'}
-                        </button>
-                      )}
+                              setRepayAccId(
+                                preferBiz?.id ?? preferLinked?.id ?? activeAccounts[0]?.id ?? 'acc-cash'
+                              );
+                            }}
+                            className={`rounded-lg px-3 py-1.5 text-xs font-semibold text-white ${
+                              isReceivable
+                                ? 'bg-[#0976A6] hover:bg-[#075D83]'
+                                : 'bg-slate-900 hover:bg-slate-800'
+                            }`}
+                          >
+                            {isReceivable ? 'Terima Pelunasan' : 'Cicil / Lunasi'}
+                          </button>
+                        )}
+                      </div>
                     </div>
+
+                    {writeOffDebtId === d.id && (
+                      <form
+                        onSubmit={(e) => {
+                          e.preventDefault();
+                          setWriteOffActionError(null);
+                          try {
+                            onCommit(
+                              writeOffReceivableAction(state, {
+                                debtId: d.id,
+                                date: todayISO(),
+                                reason: writeOffReason.trim() || 'Piutang tidak tertagih',
+                              })
+                            );
+                            setWriteOffDebtId(null);
+                            setWriteOffReason('');
+                          } catch (err) {
+                            setWriteOffActionError(
+                              err instanceof Error ? err.message : 'Gagal menghapusbukukan piutang.'
+                            );
+                          }
+                        }}
+                        className="rounded-xl border border-amber-200 bg-amber-50/70 p-3 space-y-2 text-xs"
+                      >
+                        <p className="font-bold text-amber-900">
+                          Hapus Buku Piutang ({formatIDR(d.remainingAmount)}) — Non-Kas
+                        </p>
+                        <input
+                          type="text"
+                          value={writeOffReason}
+                          onChange={(e) => setWriteOffReason(e.target.value)}
+                          placeholder="Alasan penghapusbukuan (mis. Klien gagal bayar)"
+                          className="w-full rounded-lg border border-amber-300 bg-white px-2.5 py-1.5 text-xs"
+                        />
+                        {writeOffActionError && (
+                          <p className="text-[11px] font-semibold text-red-700">{writeOffActionError}</p>
+                        )}
+                        <div className="flex justify-end gap-2">
+                          <button
+                            type="button"
+                            onClick={() => setWriteOffDebtId(null)}
+                            className="rounded-lg border border-slate-200 bg-white px-2.5 py-1 text-xs font-semibold"
+                          >
+                            Batal
+                          </button>
+                          <button
+                            type="submit"
+                            className="rounded-lg bg-amber-700 px-2.5 py-1 text-xs font-semibold text-white hover:bg-amber-800"
+                          >
+                            Konfirmasi Hapus Buku
+                          </button>
+                        </div>
+                      </form>
+                    )}
 
                     {editingDueId === d.id && (
                       <form
@@ -1136,62 +1418,78 @@ export const DebtsAndGoalsView: React.FC<DebtsAndGoalsViewProps> = ({
                             {debtHistoryError}
                           </div>
                         )}
-                        {state.debtPayments.filter((p) => p.debtId === d.id).length === 0 ? (
+                        {state.debtPayments.filter((p) => p.debtId === d.id).length === 0 &&
+                        (d.writeOffHistory?.length ?? 0) === 0 ? (
                           <p className="text-slate-500">Belum ada pembayaran tercatat.</p>
                         ) : (
-                          state.debtPayments
-                            .filter((p) => p.debtId === d.id)
-                            .map((p) => {
-                              const payAccName = state.accounts.find((a) => a.id === p.accountId)?.name;
-                              return (
-                                <div
-                                  key={p.id}
-                                  className="flex items-center justify-between gap-2 py-1 border-b border-slate-200/70 last:border-0"
-                                >
-                                  <span className={p.isVoided ? 'line-through text-slate-400' : ''}>
-                                    {formatDateID(p.date)}
-                                    {payAccName ? ` · ${payAccName}` : ''}
-                                    {p.notes ? ` · ${p.notes}` : ''}
-                                    {p.isVoided ? ' (VOID)' : ''}
-                                  </span>
-                                  <div className="flex items-center gap-2 shrink-0">
-                                    <span
-                                      className={`font-mono-num font-bold ${
-                                        p.isVoided ? 'line-through text-slate-400' : ''
-                                      }`}
-                                    >
-                                      {formatIDR(p.amount)}
+                          <>
+                            {state.debtPayments
+                              .filter((p) => p.debtId === d.id)
+                              .map((p) => {
+                                const payAccName = state.accounts.find((a) => a.id === p.accountId)?.name;
+                                return (
+                                  <div
+                                    key={p.id}
+                                    className="flex items-center justify-between gap-2 py-1 border-b border-slate-200/70 last:border-0"
+                                  >
+                                    <span className={p.isVoided ? 'line-through text-slate-400' : ''}>
+                                      {formatDateID(p.date)}
+                                      {payAccName ? ` · ${payAccName}` : ''}
+                                      {p.notes ? ` · ${p.notes}` : ''}
+                                      {p.isVoided ? ' (VOID)' : ''}
                                     </span>
-                                    {!p.isVoided && (
-                                      <button
-                                        type="button"
-                                        onClick={() => {
-                                          setDebtHistoryError(null);
-                                          try {
-                                            onCommit(
-                                              voidDebtPaymentAction(
-                                                state,
-                                                p.id,
-                                                'Pembatalan pembayaran dari riwayat utang/piutang'
-                                              )
-                                            );
-                                          } catch (err) {
-                                            setDebtHistoryError(
-                                              err instanceof Error
-                                                ? err.message
-                                                : 'Gagal membatalkan pembayaran.'
-                                            );
-                                          }
-                                        }}
-                                        className="rounded border border-amber-200 bg-amber-50 px-2 py-0.5 text-[10px] font-semibold text-amber-800 hover:bg-amber-100"
+                                    <div className="flex items-center gap-2 shrink-0">
+                                      <span
+                                        className={`font-mono-num font-bold ${
+                                          p.isVoided ? 'line-through text-slate-400' : ''
+                                        }`}
                                       >
-                                        Batalkan
-                                      </button>
-                                    )}
+                                        {formatIDR(p.amount)}
+                                      </span>
+                                      {!p.isVoided && (
+                                        <button
+                                          type="button"
+                                          onClick={() => {
+                                            setDebtHistoryError(null);
+                                            try {
+                                              onCommit(
+                                                voidDebtPaymentAction(
+                                                  state,
+                                                  p.id,
+                                                  'Pembatalan pembayaran dari riwayat utang/piutang'
+                                                )
+                                              );
+                                            } catch (err) {
+                                              setDebtHistoryError(
+                                                err instanceof Error
+                                                  ? err.message
+                                                  : 'Gagal membatalkan pembayaran.'
+                                              );
+                                            }
+                                          }}
+                                          className="rounded border border-amber-200 bg-amber-50 px-2 py-0.5 text-[10px] font-semibold text-amber-800 hover:bg-amber-100"
+                                        >
+                                          Batalkan
+                                        </button>
+                                      )}
+                                    </div>
                                   </div>
-                                </div>
-                              );
-                            })
+                                );
+                              })}
+                            {(d.writeOffHistory ?? []).map((wh) => (
+                              <div
+                                key={wh.id}
+                                className="flex items-center justify-between gap-2 py-1 border-b border-slate-200/70 last:border-0 text-amber-800"
+                              >
+                                <span>
+                                  {formatDateID(wh.date)} ·{' '}
+                                  {wh.action === 'write_off' ? 'Hapus Buku' : 'Pemulihan'}
+                                  {wh.reason ? ` · ${wh.reason}` : ''}
+                                </span>
+                                <span className="font-mono-num font-bold">{formatIDR(wh.amount)}</span>
+                              </div>
+                            ))}
+                          </>
                         )}
                       </div>
                     )}

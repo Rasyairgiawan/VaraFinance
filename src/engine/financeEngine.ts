@@ -2,10 +2,15 @@ import { DEFAULT_PROJECTION_ASSUMPTIONS } from '../data/initialProfile';
 import {
   Account,
   AllocationRules,
+  CustodialFund,
   DisciplineCheckResult,
   FinanceState,
   FinancialMode,
   FreelanceProject,
+  FundAllocation,
+  PhysicalAsset,
+  PhysicalItemLoan,
+  ProjectAdvance,
   ProjectExpense,
   ProjectPayment,
   ProjectionAssumptions,
@@ -41,10 +46,14 @@ export interface ProjectFinancialSummary {
   expectedAmount: number;
   outstandingReceivables: number;
   totalExpenses: number;
+  reimbursableAdvancesTotal: number;
   netProfit: number;
   distributableProfit: number;
   businessRetained: number;
   personalShare: number;
+  recognizedAdvanceAmount: number;
+  unrecognizedAdvanceAmount: number;
+  refundedAdvanceAmount: number;
 }
 
 export interface PeriodBudgetStatus {
@@ -164,6 +173,7 @@ export interface ActiveReminderItem {
     | 'no_spend'
     | 'cigarette'
     | 'budget_warning'
+    | 'asset_loan'
     | 'custom';
   title: string;
   dueDate: string;
@@ -231,6 +241,35 @@ export interface FinanceSnapshot {
   businessBalance: number;
   protectedAccountBalance: number;
   totalNetAssets: number;
+  custodialFundsHeldTotal: number;
+  custodialInLiquid: number;
+  custodialInProtected: number;
+  custodialInBusiness: number;
+  deferredProjectAdvancesTotal: number;
+  deferredAdvanceRecognizedTotal: number;
+  deferredAdvanceRefundedTotal: number;
+  deferredAdvancesInLiquid: number;
+  deferredAdvancesInProtected: number;
+  deferredAdvancesInBusiness: number;
+  personalLiquidOwnNet: number;
+  protectedFreeBalance: number;
+  businessFreeBalance: number;
+  physicalAssetsTotal: number;
+  physicalAssetsCount: number;
+  lentAssetsActiveCount: number;
+  borrowedItemsActiveCount: number;
+  lentLoansActiveCount: number;
+  overdueItemLoansCount: number;
+  assetSaleGainLossTotal: number;
+  assetCurrentLostValueTotal: number;
+  assetHistoricalLossTotal: number;
+  totalPersonalWealthNet: number;
+  writtenOffReceivableTotal: number;
+  writtenOffRecognizedLossTotal: number;
+  writtenOffUnrecognizedTotal: number;
+  recognizedIncomeThisMonth: number;
+  cashReceiptsThisMonth: number;
+  linkedDebtObligationsExcludedTotal: number;
   reservedObligations: number;
   unfundedObligations: number;
   reservedScheduledExpenses: number;
@@ -269,6 +308,16 @@ export interface FinanceSnapshot {
   disciplineScoreReason: string;
   disciplineScoreBreakdown: { label: string; score: number; max: number }[];
   monthlyPrediction: MonthlyPrediction;
+}
+
+export function isPhysicalLoanOverdue(loan: PhysicalItemLoan, referenceISO: string): boolean {
+  return (
+    !loan.isVoided &&
+    !loan.deletedAt &&
+    loan.status === 'active' &&
+    Boolean(loan.expectedReturnDate) &&
+    referenceISO > (loan.expectedReturnDate as string)
+  );
 }
 
 export function isObligationAllocatable(ob: RecurringObligation, referenceISO: string): boolean {
@@ -311,24 +360,96 @@ export function computeAccountBalances(state: FinanceState): AccountWithBalance[
   }));
 }
 
+function classifyRestrictedAllocations(
+  items: Array<{
+    remainingAmount: number;
+    holdingAccountId: string;
+    fundAllocations?: FundAllocation[];
+    status: string;
+    isVoided?: boolean;
+    deletedAt?: string;
+  }>,
+  activeAccountMap: Map<string, AccountWithBalance>
+): { totalHeld: number; inLiquid: number; inProtected: number; inBusiness: number } {
+  let totalHeld = 0;
+  let inLiquid = 0;
+  let inProtected = 0;
+  let inBusiness = 0;
+
+  for (const item of items) {
+    if (item.isVoided || Boolean(item.deletedAt) || item.status !== 'active' || item.remainingAmount <= 0) {
+      continue;
+    }
+    totalHeld += item.remainingAmount;
+
+    const rawAllocations =
+      Array.isArray(item.fundAllocations) && item.fundAllocations.length > 0
+        ? item.fundAllocations.filter((a) => a.amount > 0)
+        : [{ accountId: item.holdingAccountId, amount: item.remainingAmount }];
+
+    const allocSum = rawAllocations.reduce((s, a) => s + a.amount, 0);
+    const allocations =
+      allocSum > 0
+        ? rawAllocations
+        : [{ accountId: item.holdingAccountId, amount: item.remainingAmount }];
+
+    for (const alloc of allocations) {
+      const acc = activeAccountMap.get(alloc.accountId);
+      if (!acc) continue;
+      if (acc.isBusiness) {
+        inBusiness += alloc.amount;
+      } else if (
+        Boolean(acc.isProtected) ||
+        acc.accountType === 'savings' ||
+        acc.accountType === 'investment'
+      ) {
+        inProtected += alloc.amount;
+      } else {
+        inLiquid += alloc.amount;
+      }
+    }
+  }
+
+  return { totalHeld, inLiquid, inProtected, inBusiness };
+}
+
 export function computeProjectSummary(
   project: FreelanceProject,
   payments: ProjectPayment[],
-  expenses: ProjectExpense[]
+  expenses: ProjectExpense[],
+  projectAdvances: ProjectAdvance[] = []
 ): ProjectFinancialSummary {
   const projPayments = payments.filter((p) => p.projectId === project.id && !p.isVoided);
   const projExpenses = expenses.filter((e) => e.projectId === project.id && !e.isVoided);
+  const projAdvances = projectAdvances.filter(
+    (a) => a.projectId === project.id && !a.isVoided && !a.deletedAt
+  );
 
-  const receivedAmount = projPayments
-    .filter((p) => p.status === 'received')
-    .reduce((sum, p) => sum + p.amount, 0);
+  const recognizedAdvanceAmount = projAdvances.reduce((sum, a) => sum + a.recognizedAmount, 0);
+  const unrecognizedAdvanceAmount = projAdvances
+    .filter((a) => a.status === 'active')
+    .reduce((sum, a) => sum + a.remainingAmount, 0);
+  const refundedAdvanceAmount = projAdvances.reduce((sum, a) => sum + a.refundedAmount, 0);
+
+  const receivedAmount =
+    projPayments
+      .filter((p) => p.status === 'received')
+      .reduce((sum, p) => sum + p.amount, 0) + recognizedAdvanceAmount;
 
   const expectedAmount = projPayments
     .filter((p) => p.status === 'expected')
     .reduce((sum, p) => sum + p.amount, 0);
 
-  const outstandingReceivables = Math.max(0, project.contractValue - receivedAmount);
-  const totalExpenses = projExpenses.reduce((sum, e) => sum + e.amount, 0);
+  const outstandingReceivables = Math.max(
+    0,
+    project.contractValue - receivedAmount - unrecognizedAdvanceAmount
+  );
+  const totalExpenses = projExpenses
+    .filter((e) => (e.expenseKind ?? 'project_cost') === 'project_cost')
+    .reduce((sum, e) => sum + e.amount, 0);
+  const reimbursableAdvancesTotal = projExpenses
+    .filter((e) => e.expenseKind === 'pure_advance' || e.expenseKind === 'pass_through')
+    .reduce((sum, e) => sum + e.amount, 0);
   const netProfit = receivedAmount - totalExpenses;
   const distributableProfit = Math.max(0, netProfit);
   const businessRetained = Math.round(distributableProfit * (project.businessSharePct / 100));
@@ -340,10 +461,14 @@ export function computeProjectSummary(
     expectedAmount,
     outstandingReceivables,
     totalExpenses,
+    reimbursableAdvancesTotal,
     netProfit,
     distributableProfit,
     businessRetained,
     personalShare,
+    recognizedAdvanceAmount,
+    unrecognizedAdvanceAmount,
+    refundedAdvanceAmount,
   };
 }
 
@@ -427,19 +552,87 @@ export function computeFinanceSnapshot(
     .reduce((s, a) => s + a.currentBalance, 0);
   const totalNetAssets = liquidPersonalBalance + businessBalance + protectedAccountBalance + archivedBalanceTotal;
 
+  const activeAccountMap = new Map<string, AccountWithBalance>(
+    activeAccounts.map((a) => [a.id, a])
+  );
+  const custodialFundsList: CustodialFund[] = state.custodialFunds ?? [];
+  const projectAdvancesList: ProjectAdvance[] = state.projectAdvances ?? [];
+
+  const custodialBreakdown = classifyRestrictedAllocations(custodialFundsList, activeAccountMap);
+  const custodialFundsHeldTotal = custodialBreakdown.totalHeld;
+  const custodialInLiquid = custodialBreakdown.inLiquid;
+  const custodialInProtected = custodialBreakdown.inProtected;
+  const custodialInBusiness = custodialBreakdown.inBusiness;
+
+  const advanceBreakdown = classifyRestrictedAllocations(projectAdvancesList, activeAccountMap);
+  const deferredProjectAdvancesTotal = advanceBreakdown.totalHeld;
+  const deferredAdvancesInLiquid = advanceBreakdown.inLiquid;
+  const deferredAdvancesInProtected = advanceBreakdown.inProtected;
+  const deferredAdvancesInBusiness = advanceBreakdown.inBusiness;
+  const deferredAdvanceRecognizedTotal = projectAdvancesList
+    .filter((a) => !a.isVoided && !a.deletedAt)
+    .reduce((sum, a) => sum + a.recognizedAmount, 0);
+  const deferredAdvanceRefundedTotal = projectAdvancesList
+    .filter((a) => !a.isVoided && !a.deletedAt)
+    .reduce((sum, a) => sum + a.refundedAmount, 0);
+
+  const personalLiquidOwnNet =
+    liquidPersonalBalance - custodialInLiquid - deferredAdvancesInLiquid;
+  const protectedFreeBalance =
+    protectedAccountBalance - custodialInProtected - deferredAdvancesInProtected;
+  const businessFreeBalance =
+    businessBalance - custodialInBusiness - deferredAdvancesInBusiness;
+
   // Separate Obligations vs Scheduled Expenses (both active and within date range)
   const activeAllCommitments = state.obligations.filter((o) => isObligationAllocatable(o, referenceISO));
   const activeObligations = activeAllCommitments.filter((o) => (o.kind ?? 'obligation') === 'obligation');
   const activeScheduled = activeAllCommitments.filter((o) => o.kind === 'scheduled_expense');
 
-  const reservedObligations = activeObligations.reduce((sum, o) => sum + o.reservedAmount, 0);
-  const unfundedObligations = activeObligations.reduce(
+  // Utang (payable) vs Piutang (receivable) vs Write-Off
+  const activePayableDebts = state.debts.filter(
+    (d) => !d.isVoided && d.status === 'active' && (d.direction ?? 'payable') === 'payable'
+  );
+  const activePayableDebtIds = new Set(
+    activePayableDebts.filter((d) => d.remainingAmount > 0).map((d) => d.id)
+  );
+  const outstandingDebtTotal = activePayableDebts.reduce((sum, d) => sum + d.remainingAmount, 0);
+
+  const outstandingReceivableTotal = state.debts
+    .filter((d) => !d.isVoided && d.status === 'active' && d.direction === 'receivable')
+    .reduce((sum, d) => sum + d.remainingAmount, 0);
+
+  const writtenOffReceivables = state.debts.filter(
+    (d) => !d.isVoided && d.direction === 'receivable' && d.status === 'written_off'
+  );
+  const writtenOffReceivableTotal = writtenOffReceivables.reduce(
+    (sum, d) => sum + (d.writtenOffAmount ?? 0),
+    0
+  );
+  const writtenOffRecognizedLossTotal = writtenOffReceivables
+    .filter((d) => Boolean(d.revenueAlreadyRecorded))
+    .reduce((sum, d) => sum + (d.writtenOffAmount ?? 0), 0);
+  const writtenOffUnrecognizedTotal = writtenOffReceivables
+    .filter((d) => !d.revenueAlreadyRecorded)
+    .reduce((sum, d) => sum + (d.writtenOffAmount ?? 0), 0);
+
+  // Prevent double-deduction between Debt and RecurringObligation with linkedDebtId
+  const isCoveredByActiveDebt = (o: RecurringObligation): boolean =>
+    Boolean(o.linkedDebtId && activePayableDebtIds.has(o.linkedDebtId));
+
+  const standaloneObligations = activeObligations.filter((o) => !isCoveredByActiveDebt(o));
+  const standaloneScheduled = activeScheduled.filter((o) => !isCoveredByActiveDebt(o));
+  const linkedDebtObligationsExcludedTotal = [...activeObligations, ...activeScheduled]
+    .filter(isCoveredByActiveDebt)
+    .reduce((sum, o) => sum + o.amount, 0);
+
+  const reservedObligations = standaloneObligations.reduce((sum, o) => sum + o.reservedAmount, 0);
+  const unfundedObligations = standaloneObligations.reduce(
     (sum, o) => sum + Math.max(0, o.amount - o.reservedAmount),
     0
   );
 
-  const reservedScheduledExpenses = activeScheduled.reduce((sum, o) => sum + o.reservedAmount, 0);
-  const unfundedScheduledExpenses = activeScheduled.reduce(
+  const reservedScheduledExpenses = standaloneScheduled.reduce((sum, o) => sum + o.reservedAmount, 0);
+  const unfundedScheduledExpenses = standaloneScheduled.reduce(
     (sum, o) => sum + Math.max(0, o.amount - o.reservedAmount),
     0
   );
@@ -454,15 +647,6 @@ export function computeFinanceSnapshot(
       !o.reallocatedToGoalId
   );
 
-  // Utang (payable) vs Piutang (receivable)
-  const outstandingDebtTotal = state.debts
-    .filter((d) => !d.isVoided && d.status === 'active' && (d.direction ?? 'payable') === 'payable')
-    .reduce((sum, d) => sum + d.remainingAmount, 0);
-
-  const outstandingReceivableTotal = state.debts
-    .filter((d) => !d.isVoided && d.status === 'active' && d.direction === 'receivable')
-    .reduce((sum, d) => sum + d.remainingAmount, 0);
-
   const essentialReserve = state.settings.essentialReserveTarget;
   const activeGoals = state.goals.filter((g) => !g.isArchived);
   const protectedVirtualSavings = activeGoals
@@ -472,7 +656,7 @@ export function computeFinanceSnapshot(
   const allocatedTotal = totalReservedCommitments + protectedVirtualSavings;
 
   const rawDiscretionarySurplus =
-    liquidPersonalBalance -
+    personalLiquidOwnNet -
     totalReservedCommitments -
     totalUnfundedCommitments -
     outstandingDebtTotal -
@@ -482,6 +666,47 @@ export function computeFinanceSnapshot(
   const safeToSpend = Math.max(0, rawDiscretionarySurplus);
   const fundingShortfall = Math.max(0, -rawDiscretionarySurplus);
 
+  const physicalAssetsList: PhysicalAsset[] = (state.physicalAssets ?? []).filter(
+    (a) => !a.isVoided && !a.deletedAt && a.status !== 'voided'
+  );
+  const ownedActiveAssets = physicalAssetsList.filter(
+    (a) => a.status === 'active' || a.status === 'lent'
+  );
+  const physicalAssetsTotal = ownedActiveAssets.reduce((sum, a) => sum + a.acquisitionValue, 0);
+  const physicalAssetsCount = ownedActiveAssets.length;
+  const lentAssetsActiveCount = ownedActiveAssets.filter((a) => a.status === 'lent').length;
+  const assetSaleGainLossTotal = physicalAssetsList
+    .filter((a) => a.status === 'sold' && a.disposal)
+    .reduce((sum, a) => sum + (a.disposal?.gainOrLoss ?? 0), 0);
+  const assetCurrentLostValueTotal = physicalAssetsList
+    .filter((a) => a.status === 'lost')
+    .reduce((sum, a) => sum + a.acquisitionValue, 0);
+  const assetHistoricalLossTotal = physicalAssetsList.reduce(
+    (sum, a) => sum + (a.lossHistory ?? []).reduce((ls, l) => ls + l.lossAmount, 0),
+    0
+  );
+
+  const activePhysicalLoans: PhysicalItemLoan[] = (state.physicalItemLoans ?? []).filter(
+    (l) => !l.isVoided && !l.deletedAt && l.status === 'active'
+  );
+  const borrowedItemsActiveCount = activePhysicalLoans.filter(
+    (l) => l.direction === 'borrowed'
+  ).length;
+  const lentLoansActiveCount = activePhysicalLoans.filter(
+    (l) => l.direction === 'lent'
+  ).length;
+  const overdueItemLoansCount = activePhysicalLoans.filter((l) =>
+    isPhysicalLoanOverdue(l, referenceISO)
+  ).length;
+
+  const totalPersonalWealthNet =
+    totalNetAssets -
+    custodialFundsHeldTotal -
+    deferredProjectAdvancesTotal +
+    outstandingReceivableTotal -
+    outstandingDebtTotal +
+    physicalAssetsTotal;
+
   const emergencyGoal = activeGoals.find((g) => g.goalType === 'emergency');
   const emergencySaved = emergencyGoal?.currentAmount ?? 0;
   const emergencyTarget = emergencyGoal?.targetAmount ?? state.settings.emergencyFundTarget;
@@ -489,7 +714,7 @@ export function computeFinanceSnapshot(
   const totalSavingsTarget = activeGoals.reduce((sum, g) => sum + g.targetAmount, 0);
 
   const modeEvaluation = evaluateFinancialMode({
-    liquidPersonalBalance,
+    liquidPersonalBalance: personalLiquidOwnNet,
     safeToSpend,
     rawDiscretionarySurplus,
     outstandingDebtTotal,
@@ -792,11 +1017,37 @@ export function computeFinanceSnapshot(
     daysStatus,
   };
 
+  const writtenOffProjectPaymentIds = new Set(
+    writtenOffReceivables
+      .map((d) => d.projectPaymentId)
+      .filter((ppId): ppId is string => Boolean(ppId))
+  );
+  const activeProjectPaymentsForSummary = state.projectPayments.filter(
+    (pp) => !(pp.status === 'expected' && writtenOffProjectPaymentIds.has(pp.id))
+  );
+
   const projectSummaries = state.projects
     .filter((p) => !p.isArchived)
-    .map((p) => computeProjectSummary(p, state.projectPayments, state.projectExpenses));
+    .map((p) =>
+      computeProjectSummary(
+        p,
+        activeProjectPaymentsForSummary,
+        state.projectExpenses,
+        projectAdvancesList
+      )
+    );
 
   const confirmedIncomeThisMonth = monthlyComparison.currentIncome;
+  const recognizedIncomeThisMonth = confirmedIncomeThisMonth;
+  const cashReceiptsThisMonth = validTransactions
+    .filter(
+      (t) =>
+        t.type === 'income' &&
+        t.affectsAccountBalance !== false &&
+        t.date >= monthStart &&
+        t.date <= referenceISO
+    )
+    .reduce((s, t) => s + t.amount, 0);
   const confirmedExpenseThisMonth = mSum.total;
   const expectedFreelanceReceivables = projectSummaries.reduce((s, p) => s + p.expectedAmount, 0);
 
@@ -815,9 +1066,14 @@ export function computeFinanceSnapshot(
       : avgDailyDiscretionaryRate;
   const estimatedRemainingDiscretionarySpend = appliedDailyDiscretionaryRate * remainingDaysInMonth;
 
-  // Important fix: reserved obligations & scheduled expenses still sit inside liquidPersonalBalance until actually paid!
-  const activeObligationsTotalAmount = activeObligations.reduce((s, o) => s + o.amount, 0);
-  const activeScheduledTotalAmount = activeScheduled.reduce((s, o) => s + o.amount, 0);
+  // Important fix: reserved obligations & scheduled expenses still sit inside personalLiquidOwnNet until actually paid;
+  // also avoid double-subtracting obligations linked to active debts when debt is included in projection.
+  const activeObligationsTotalAmount = (
+    assumptions.includeDebtInProjection ? standaloneObligations : activeObligations
+  ).reduce((s, o) => s + o.amount, 0);
+  const activeScheduledTotalAmount = (
+    assumptions.includeDebtInProjection ? standaloneScheduled : activeScheduled
+  ).reduce((s, o) => s + o.amount, 0);
 
   const estimatedUpcomingObligations = assumptions.includeObligationsInProjection
     ? activeObligationsTotalAmount
@@ -828,7 +1084,7 @@ export function computeFinanceSnapshot(
   const estimatedUpcomingDebt = assumptions.includeDebtInProjection ? outstandingDebtTotal : 0;
 
   const estimatedEndOfMonthLiquidBalance =
-    liquidPersonalBalance +
+    personalLiquidOwnNet +
     assumptions.expectedExtraIncome -
     estimatedRemainingDiscretionarySpend -
     estimatedUpcomingObligations -
@@ -930,6 +1186,7 @@ export function computeFinanceSnapshot(
     potentialShortfall,
     completedObligationsNeedingReallocation,
     hasEnoughDisciplineData,
+    overdueItemLoansCount,
   });
 
   return {
@@ -942,6 +1199,35 @@ export function computeFinanceSnapshot(
     businessBalance,
     protectedAccountBalance,
     totalNetAssets,
+    custodialFundsHeldTotal,
+    custodialInLiquid,
+    custodialInProtected,
+    custodialInBusiness,
+    deferredProjectAdvancesTotal,
+    deferredAdvanceRecognizedTotal,
+    deferredAdvanceRefundedTotal,
+    deferredAdvancesInLiquid,
+    deferredAdvancesInProtected,
+    deferredAdvancesInBusiness,
+    personalLiquidOwnNet,
+    protectedFreeBalance,
+    businessFreeBalance,
+    physicalAssetsTotal,
+    physicalAssetsCount,
+    lentAssetsActiveCount,
+    borrowedItemsActiveCount,
+    lentLoansActiveCount,
+    overdueItemLoansCount,
+    assetSaleGainLossTotal,
+    assetCurrentLostValueTotal,
+    assetHistoricalLossTotal,
+    totalPersonalWealthNet,
+    writtenOffReceivableTotal,
+    writtenOffRecognizedLossTotal,
+    writtenOffUnrecognizedTotal,
+    recognizedIncomeThisMonth,
+    cashReceiptsThisMonth,
+    linkedDebtObligationsExcludedTotal,
     reservedObligations,
     unfundedObligations,
     reservedScheduledExpenses,
@@ -1136,6 +1422,33 @@ function buildActiveReminders(
     }
   }
 
+  for (const loan of state.physicalItemLoans ?? []) {
+    if (loan.isVoided || loan.deletedAt || loan.status !== 'active' || !loan.expectedReturnDate) {
+      continue;
+    }
+    const days = daysBetweenISO(referenceISO, loan.expectedReturnDate);
+    if (days <= 3) {
+      const id = `rem-loan-${loan.id}`;
+      if (!isReminderSuppressed(state, id, referenceISO)) {
+        const isLent = loan.direction === 'lent';
+        items.push({
+          id,
+          kind: 'asset_loan',
+          title: isLent
+            ? days < 0
+              ? `Barang dipinjamkan terlambat kembali: ${loan.itemName} (${loan.counterpartyName})`
+              : `Jadwal kembali barang dipinjamkan: ${loan.itemName} (${loan.counterpartyName})`
+            : days < 0
+            ? `Barang pinjaman terlambat dikembalikan: ${loan.itemName} (milik ${loan.counterpartyName})`
+            : `Jadwal kembalikan barang pinjaman: ${loan.itemName} (milik ${loan.counterpartyName})`,
+          dueDate: loan.expectedReturnDate,
+          daysRemaining: days,
+          severity: days < 0 ? 'critical' : days <= 1 ? 'warning' : 'normal',
+        });
+      }
+    }
+  }
+
   for (const cr of rs.customReminders ?? []) {
     if (!cr.enabled) continue;
     const days = daysBetweenISO(referenceISO, cr.date);
@@ -1293,8 +1606,21 @@ function buildRecommendations(ctx: {
   potentialShortfall: number;
   completedObligationsNeedingReallocation: RecurringObligation[];
   hasEnoughDisciplineData: boolean;
+  overdueItemLoansCount?: number;
 }): RecommendationItem[] {
   const recs: RecommendationItem[] = [];
+
+  if ((ctx.overdueItemLoansCount ?? 0) > 0) {
+    recs.push({
+      id: 'rec-overdue-item-loans',
+      severity: 'warning',
+      title: `${ctx.overdueItemLoansCount} Peminjaman Barang Melewati Batas Pengembalian`,
+      message: 'Terdapat barang fisik yang dipinjam atau dipinjamkan melewati tanggal pengembalian yang direncanakan.',
+      reason: 'Segera tindak lanjuti pengembalian atau catat kehilangan aset bila barang tidak dapat dikembalikan.',
+      actionLabel: 'Kelola Barang',
+      targetTab: 'assets',
+    });
+  }
 
   if (ctx.completedObligationsNeedingReallocation.length > 0) {
     const ob = ctx.completedObligationsNeedingReallocation[0];
@@ -1482,8 +1808,8 @@ export function simulateExpenseImpact(
 
   const nextMode = evaluateFinancialMode({
     liquidPersonalBalance: affectsPersonalLiquid
-      ? snap.liquidPersonalBalance - amount
-      : snap.liquidPersonalBalance,
+      ? snap.personalLiquidOwnNet - amount
+      : snap.personalLiquidOwnNet,
     safeToSpend: safeToSpendAfter,
     rawDiscretionarySurplus: rawAfter,
     outstandingDebtTotal: snap.outstandingDebtTotal,

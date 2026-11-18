@@ -5,6 +5,7 @@ import {
   CreditCard,
   Download,
   Lightbulb,
+  Package,
   PiggyBank,
   Printer,
   ShieldCheck,
@@ -168,12 +169,77 @@ export const AnalysisView: React.FC<AnalysisViewProps> = ({ state, snapshot, onC
           </p>
         </div>
         <div className="rounded-2xl border border-slate-200 bg-white p-4">
-          <p className="text-xs text-slate-500">Piutang Aktif (Belum Cair)</p>
+          <p className="text-xs text-slate-500">Kekayaan Bersih Pribadi</p>
           <p className="font-mono-num text-lg font-extrabold text-slate-900 mt-1">
-            {formatIDR(snapshot.outstandingReceivableTotal)}
+            {formatIDR(snapshot.totalPersonalWealthNet)}
+          </p>
+          <p className="text-[11px] text-slate-500 mt-0.5 font-mono-num">
+            Termasuk aset fisik {formatIDR(snapshot.physicalAssetsTotal)} ({snapshot.physicalAssetsCount} item)
           </p>
         </div>
       </div>
+
+      {/* Physical Assets & Net Worth Composition */}
+      <section className="rounded-2xl border border-slate-200 bg-white p-5 space-y-4">
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <div className="flex items-center gap-2.5">
+            <Package className="w-5 h-5 text-[#0976A6]" />
+            <div>
+              <h2 className="font-display text-sm font-bold text-slate-900">
+                Ringkasan Aset Fisik, Pelepasan &amp; Peminjaman Barang
+              </h2>
+              <p className="text-xs text-slate-500">
+                Aset fisik dihitung pada nilai perolehan; tidak dihitung sebagai dana likuid maupun pengeluaran konsumtif.
+              </p>
+            </div>
+          </div>
+          <span className="font-mono-num text-xs font-semibold text-slate-600">
+            Piutang aktif {formatIDR(snapshot.outstandingReceivableTotal)} · Utang aktif {formatIDR(snapshot.outstandingDebtTotal)}
+          </span>
+        </div>
+
+        <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 text-xs">
+          <div className="rounded-xl bg-slate-50 p-3">
+            <p className="text-slate-500">Aset Fisik Dimiliki</p>
+            <p className="font-mono-num text-base font-bold text-slate-900 mt-0.5">
+              {formatIDR(snapshot.physicalAssetsTotal)}
+            </p>
+            <p className="text-[11px] text-slate-500 font-mono-num">
+              {snapshot.physicalAssetsCount} aset ({snapshot.lentAssetsActiveCount} dipinjamkan)
+            </p>
+          </div>
+          <div className="rounded-xl bg-slate-50 p-3">
+            <p className="text-slate-500">Laba/Rugi Penjualan Aset</p>
+            <p
+              className={`font-mono-num text-base font-bold mt-0.5 ${
+                snapshot.assetSaleGainLossTotal >= 0 ? 'text-emerald-700' : 'text-red-700'
+              }`}
+            >
+              {snapshot.assetSaleGainLossTotal >= 0 ? '+' : ''}
+              {formatIDR(snapshot.assetSaleGainLossTotal)}
+            </p>
+            <p className="text-[11px] text-slate-500">Selisih jual vs perolehan</p>
+          </div>
+          <div className="rounded-xl bg-slate-50 p-3">
+            <p className="text-slate-500">Riwayat Nilai Aset Hilang</p>
+            <p className="font-mono-num text-base font-bold text-red-700 mt-0.5">
+              {formatIDR(snapshot.assetHistoricalLossTotal)}
+            </p>
+            <p className="text-[11px] text-slate-500 font-mono-num">
+              Saat ini hilang: {formatIDR(snapshot.assetCurrentLostValueTotal)}
+            </p>
+          </div>
+          <div className="rounded-xl bg-slate-50 p-3">
+            <p className="text-slate-500">Pinjaman Barang Fisik</p>
+            <p className="font-mono-num text-base font-bold text-slate-900 mt-0.5">
+              {snapshot.borrowedItemsActiveCount} pinjaman luar
+            </p>
+            <p className="text-[11px] text-slate-500">
+              Barang orang lain tidak masuk aset Anda
+            </p>
+          </div>
+        </div>
+      </section>
 
       {/* Row 1: Discipline Score + Actual vs Estimate vs Projection */}
       <div className="grid grid-cols-1 lg:grid-cols-12 gap-5">

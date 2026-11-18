@@ -15,6 +15,7 @@ import {
   EyeOff,
   GraduationCap,
   Info,
+  Package,
   Plus,
   ShieldAlert,
   Utensils,
@@ -164,6 +165,24 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                     Piutang belum cair (bukan kas): {formatIDR(snapshot.outstandingReceivableTotal)}
                   </p>
                 )}
+                {(snapshot.custodialFundsHeldTotal > 0 || snapshot.deferredProjectAdvancesTotal > 0) && (
+                  <p className="mt-0.5 text-[11px] text-amber-800 font-mono-num">
+                    Titipan: {formatIDR(snapshot.custodialFundsHeldTotal)} · DP Belum Diakui:{' '}
+                    {formatIDR(snapshot.deferredProjectAdvancesTotal)}
+                  </p>
+                )}
+                <div className="mt-1.5 flex sm:justify-end">
+                  <button
+                    type="button"
+                    onClick={() => onNavigate('assets')}
+                    className="inline-flex items-center gap-1 text-[11px] font-semibold text-[#0976A6] hover:underline font-mono-num"
+                  >
+                    <Package className="w-3 h-3" />
+                    <span>
+                      Aset Fisik ({snapshot.physicalAssetsCount}): {formatIDR(snapshot.physicalAssetsTotal)} · Kekayaan Bersih: {formatIDR(snapshot.totalPersonalWealthNet)}
+                    </span>
+                  </button>
+                </div>
               </div>
             </div>
 
@@ -209,6 +228,14 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                   {formatIDR(snapshot.liquidPersonalBalance)}
                 </span>
               </div>
+              {snapshot.custodialInLiquid + snapshot.deferredAdvancesInLiquid > 0 && (
+                <div className="flex items-center justify-between text-amber-800">
+                  <span>(-) Dana Titipan &amp; DP Proyek Belum Diakui di Akun Likuid</span>
+                  <span className="font-mono-num font-semibold text-amber-800">
+                    -{formatIDR(snapshot.custodialInLiquid + snapshot.deferredAdvancesInLiquid)}
+                  </span>
+                </div>
+              )}
               <div className="flex items-center justify-between text-slate-600">
                 <span>(-) Dana Sudah Dialokasikan (Kewajiban &amp; Tabungan Virtual)</span>
                 <span className="font-mono-num font-semibold text-[#0976A6]">
@@ -613,7 +640,8 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                   e.type === 'debt_due' ||
                   e.type === 'receivable_due' ||
                   e.type === 'obligation_due' ||
-                  e.type === 'scheduled_expense_due'
+                  e.type === 'scheduled_expense_due' ||
+                  e.type === 'asset_loan_due'
               );
               const isToday = d.date === snapshot.nowISO;
               return (

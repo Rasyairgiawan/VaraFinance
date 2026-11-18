@@ -8,12 +8,14 @@ import {
   Home,
   Lock,
   LogOut,
+  Package,
   PiggyBank,
   Plus,
   Settings,
   SlidersHorizontal,
 } from 'lucide-react';
 import { AnalysisView } from './components/AnalysisView';
+import { AssetsAndLendingView } from './components/AssetsAndLendingView';
 import { AuthScreen } from './components/AuthScreen';
 import { BudgetsAndDisciplineView } from './components/BudgetsAndDisciplineView';
 import { CalendarAndRemindersView } from './components/CalendarAndRemindersView';
@@ -44,6 +46,7 @@ type NavTab =
   | 'budgets'
   | 'obligations'
   | 'analysis'
+  | 'assets'
   | 'calendar'
   | 'settings';
 
@@ -217,6 +220,12 @@ export default function App() {
       label: 'Analisis & Laporan',
       shortLabel: 'Analisis',
       icon: <BarChart3 className="w-5 h-5" />,
+    },
+    {
+      id: 'assets',
+      label: 'Aset & Peminjaman Barang',
+      shortLabel: 'Aset',
+      icon: <Package className="w-5 h-5" />,
     },
     {
       id: 'calendar',
@@ -404,6 +413,19 @@ export default function App() {
               )}
               <button
                 type="button"
+                onClick={() => setActiveTab('assets')}
+                className={`lg:hidden min-h-[40px] min-w-[40px] flex items-center justify-center rounded-xl border ${
+                  activeTab === 'assets'
+                    ? 'border-[#0C8FC5] bg-[#E8F6FC] text-[#0976A6]'
+                    : 'border-slate-200 bg-white text-slate-700'
+                }`}
+                aria-label="Aset & Peminjaman Barang"
+                title="Aset & Peminjaman Barang"
+              >
+                <Package className="w-4 h-4" />
+              </button>
+              <button
+                type="button"
                 onClick={() => setActiveTab('calendar')}
                 className={`lg:hidden min-h-[40px] min-w-[40px] flex items-center justify-center rounded-xl border ${
                   activeTab === 'calendar'
@@ -516,6 +538,14 @@ export default function App() {
 
             {activeTab === 'analysis' && (
               <AnalysisView
+                state={state}
+                snapshot={snapshot}
+                onCommit={commitState}
+              />
+            )}
+
+            {activeTab === 'assets' && (
+              <AssetsAndLendingView
                 state={state}
                 snapshot={snapshot}
                 onCommit={commitState}

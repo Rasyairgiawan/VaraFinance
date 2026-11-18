@@ -4,6 +4,7 @@ import {
   AccountTransfer,
   Category,
   ChangeLogEntry,
+  CustodialFund,
   CustomReminder,
   Debt,
   DebtPayment,
@@ -11,12 +12,16 @@ import {
   FreelanceProject,
   GoalContribution,
   ObligationLog,
+  PhysicalAsset,
+  PhysicalItemLoan,
+  ProjectAdvance,
   ProjectExpense,
   ProjectPayment,
   RecurringObligation,
   ReminderActionState,
   ReminderSettings,
   SavingsGoal,
+  SplitBill,
   Transaction,
 } from '../types/finance';
 import { generateId, isValidUUID } from '../utils/format';
@@ -76,6 +81,11 @@ export interface MigrationIdMaps {
   debts: Record<string, string>;
   obligations: Record<string, string>;
   goals: Record<string, string>;
+  splitBills: Record<string, string>;
+  custodialFunds: Record<string, string>;
+  projectAdvances: Record<string, string>;
+  physicalAssets: Record<string, string>;
+  physicalItemLoans: Record<string, string>;
   transactions: Record<string, string>;
   transfers: Record<string, string>;
   projectPayments: Record<string, string>;
@@ -497,6 +507,11 @@ function remapChangeLogEntityId(
     debts: CollectionLookup;
     obligations: CollectionLookup;
     goals: CollectionLookup;
+    splitBills: CollectionLookup;
+    custodialFunds: CollectionLookup;
+    projectAdvances: CollectionLookup;
+    physicalAssets: CollectionLookup;
+    physicalItemLoans: CollectionLookup;
   }
 ): string {
   switch (entry.entityType) {
@@ -514,6 +529,16 @@ function remapChangeLogEntityId(
       return lookupIdFromCollection(entry.entityId, lookups.obligations) ?? entry.entityId;
     case 'goal':
       return lookupIdFromCollection(entry.entityId, lookups.goals) ?? entry.entityId;
+    case 'split_bill':
+      return lookupIdFromCollection(entry.entityId, lookups.splitBills) ?? entry.entityId;
+    case 'custodial':
+      return lookupIdFromCollection(entry.entityId, lookups.custodialFunds) ?? entry.entityId;
+    case 'project_advance':
+      return lookupIdFromCollection(entry.entityId, lookups.projectAdvances) ?? entry.entityId;
+    case 'physical_asset':
+      return lookupIdFromCollection(entry.entityId, lookups.physicalAssets) ?? entry.entityId;
+    case 'physical_loan':
+      return lookupIdFromCollection(entry.entityId, lookups.physicalItemLoans) ?? entry.entityId;
     default:
       return entry.entityId;
   }
@@ -532,6 +557,11 @@ const OPTIONAL_LEGACY_ARRAYS: ReadonlyArray<keyof FinanceState> = [
   'projectExpenses',
   'debts',
   'debtPayments',
+  'splitBills',
+  'custodialFunds',
+  'projectAdvances',
+  'physicalAssets',
+  'physicalItemLoans',
   'obligations',
   'obligationLogs',
   'goals',
@@ -616,6 +646,11 @@ function normalizeCloneForMigration(rawClone: Partial<FinanceState>): FinanceSta
     projectExpenses: rawClone.projectExpenses ?? [],
     debts: rawClone.debts ?? [],
     debtPayments: rawClone.debtPayments ?? [],
+    ...(rawClone.splitBills !== undefined ? { splitBills: rawClone.splitBills } : {}),
+    ...(rawClone.custodialFunds !== undefined ? { custodialFunds: rawClone.custodialFunds } : {}),
+    ...(rawClone.projectAdvances !== undefined ? { projectAdvances: rawClone.projectAdvances } : {}),
+    ...(rawClone.physicalAssets !== undefined ? { physicalAssets: rawClone.physicalAssets } : {}),
+    ...(rawClone.physicalItemLoans !== undefined ? { physicalItemLoans: rawClone.physicalItemLoans } : {}),
     obligations: rawClone.obligations ?? [],
     obligationLogs: rawClone.obligationLogs ?? [],
     goals: rawClone.goals ?? [],
@@ -643,6 +678,11 @@ function verifyPostMigrationInvariants(
     ['debts', after.debts],
     ['obligations', after.obligations],
     ['goals', after.goals],
+    ['splitBills', after.splitBills ?? []],
+    ['custodialFunds', after.custodialFunds ?? []],
+    ['projectAdvances', after.projectAdvances ?? []],
+    ['physicalAssets', after.physicalAssets ?? []],
+    ['physicalItemLoans', after.physicalItemLoans ?? []],
     ['transactions', after.transactions],
     ['transfers', after.transfers],
     ['projectPayments', after.projectPayments],
@@ -678,6 +718,11 @@ function verifyPostMigrationInvariants(
     ['projectExpenses', before.projectExpenses.length, after.projectExpenses.length],
     ['debts', before.debts.length, after.debts.length],
     ['debtPayments', before.debtPayments.length, after.debtPayments.length],
+    ['splitBills', (before.splitBills ?? []).length, (after.splitBills ?? []).length],
+    ['custodialFunds', (before.custodialFunds ?? []).length, (after.custodialFunds ?? []).length],
+    ['projectAdvances', (before.projectAdvances ?? []).length, (after.projectAdvances ?? []).length],
+    ['physicalAssets', (before.physicalAssets ?? []).length, (after.physicalAssets ?? []).length],
+    ['physicalItemLoans', (before.physicalItemLoans ?? []).length, (after.physicalItemLoans ?? []).length],
     ['obligations', before.obligations.length, after.obligations.length],
     ['obligationLogs', before.obligationLogs.length, after.obligationLogs.length],
     ['goals', before.goals.length, after.goals.length],
@@ -711,7 +756,13 @@ function verifyPostMigrationInvariants(
   const afterCategoryIds = new Set(after.categories.map((c) => c.id));
   const afterProjectIds = new Set(after.projects.map((p) => p.id));
   const afterProjectPaymentIds = new Set(after.projectPayments.map((pp) => pp.id));
+  const afterProjectExpenseIds = new Set(after.projectExpenses.map((pe) => pe.id));
   const afterDebtIds = new Set(after.debts.map((d) => d.id));
+  const afterSplitBillIds = new Set((after.splitBills ?? []).map((sb) => sb.id));
+  const afterCustodialIds = new Set((after.custodialFunds ?? []).map((cf) => cf.id));
+  const afterAdvanceIds = new Set((after.projectAdvances ?? []).map((pa) => pa.id));
+  const afterAssetIds = new Set((after.physicalAssets ?? []).map((pa) => pa.id));
+  const afterPhysicalLoanIds = new Set((after.physicalItemLoans ?? []).map((pl) => pl.id));
   const afterObligationIds = new Set(after.obligations.map((o) => o.id));
   const afterGoalIds = new Set(after.goals.map((g) => g.id));
   const afterTxIds = new Set(after.transactions.map((t) => t.id));
@@ -729,6 +780,24 @@ function verifyPostMigrationInvariants(
     }
     if (tx.debtId && !afterDebtIds.has(tx.debtId)) {
       invariantErrors.push(`transactions[${tx.id}].debtId "${tx.debtId}" yatim pasca-migrasi.`);
+    }
+    if (tx.splitBillId && !afterSplitBillIds.has(tx.splitBillId)) {
+      invariantErrors.push(`transactions[${tx.id}].splitBillId "${tx.splitBillId}" yatim pasca-migrasi.`);
+    }
+    if (tx.custodialFundId && !afterCustodialIds.has(tx.custodialFundId)) {
+      invariantErrors.push(`transactions[${tx.id}].custodialFundId "${tx.custodialFundId}" yatim pasca-migrasi.`);
+    }
+    if (tx.projectAdvanceId && !afterAdvanceIds.has(tx.projectAdvanceId)) {
+      invariantErrors.push(`transactions[${tx.id}].projectAdvanceId "${tx.projectAdvanceId}" yatim pasca-migrasi.`);
+    }
+    if (tx.assetId && !afterAssetIds.has(tx.assetId)) {
+      invariantErrors.push(`transactions[${tx.id}].assetId "${tx.assetId}" yatim pasca-migrasi.`);
+    }
+    if (tx.physicalLoanId && !afterPhysicalLoanIds.has(tx.physicalLoanId)) {
+      invariantErrors.push(`transactions[${tx.id}].physicalLoanId "${tx.physicalLoanId}" yatim pasca-migrasi.`);
+    }
+    if (tx.parentTransactionId && !afterTxIds.has(tx.parentTransactionId)) {
+      invariantErrors.push(`transactions[${tx.id}].parentTransactionId "${tx.parentTransactionId}" yatim pasca-migrasi.`);
     }
   }
 
@@ -754,11 +823,168 @@ function verifyPostMigrationInvariants(
         `debts[${debt.id}].projectPaymentId "${debt.projectPaymentId}" yatim pasca-migrasi.`
       );
     }
+    if (debt.projectExpenseId && !afterProjectExpenseIds.has(debt.projectExpenseId)) {
+      invariantErrors.push(
+        `debts[${debt.id}].projectExpenseId "${debt.projectExpenseId}" yatim pasca-migrasi.`
+      );
+    }
+    if (debt.splitBillId && !afterSplitBillIds.has(debt.splitBillId)) {
+      invariantErrors.push(
+        `debts[${debt.id}].splitBillId "${debt.splitBillId}" yatim pasca-migrasi.`
+      );
+    }
+    if (debt.linkedDebtId && !afterDebtIds.has(debt.linkedDebtId)) {
+      invariantErrors.push(
+        `debts[${debt.id}].linkedDebtId "${debt.linkedDebtId}" yatim pasca-migrasi.`
+      );
+    }
+    if (debt.assetId && !afterAssetIds.has(debt.assetId)) {
+      invariantErrors.push(
+        `debts[${debt.id}].assetId "${debt.assetId}" yatim pasca-migrasi.`
+      );
+    }
+    if (debt.physicalLoanId && !afterPhysicalLoanIds.has(debt.physicalLoanId)) {
+      invariantErrors.push(
+        `debts[${debt.id}].physicalLoanId "${debt.physicalLoanId}" yatim pasca-migrasi.`
+      );
+    }
+    for (const wh of debt.writeOffHistory ?? []) {
+      if (wh.transactionId && !afterTxIds.has(wh.transactionId)) {
+        invariantErrors.push(
+          `debts[${debt.id}].writeOffHistory[${wh.id}].transactionId "${wh.transactionId}" yatim pasca-migrasi.`
+        );
+      }
+    }
+  }
+
+  for (const sb of after.splitBills ?? []) {
+    if (!afterAccountIds.has(sb.accountId)) {
+      invariantErrors.push(`splitBills[${sb.id}].accountId yatim pasca-migrasi.`);
+    }
+    if (!afterCategoryIds.has(sb.categoryId)) {
+      invariantErrors.push(`splitBills[${sb.id}].categoryId yatim pasca-migrasi.`);
+    }
+    if (!afterTxIds.has(sb.paymentTransactionId)) {
+      invariantErrors.push(`splitBills[${sb.id}].paymentTransactionId yatim pasca-migrasi.`);
+    }
+    if (sb.personalShareTransactionId && !afterTxIds.has(sb.personalShareTransactionId)) {
+      invariantErrors.push(`splitBills[${sb.id}].personalShareTransactionId yatim pasca-migrasi.`);
+    }
+    for (const part of sb.participants) {
+      if (!isValidUUID(part.id)) {
+        invariantErrors.push(`splitBills[${sb.id}].participants[${part.id}] bukan UUID valid pasca-migrasi.`);
+      }
+      if (!afterDebtIds.has(part.debtId)) {
+        invariantErrors.push(`splitBills[${sb.id}].participants[${part.id}].debtId yatim pasca-migrasi.`);
+      }
+    }
+  }
+
+  for (const cf of after.custodialFunds ?? []) {
+    if (!afterAccountIds.has(cf.holdingAccountId)) {
+      invariantErrors.push(`custodialFunds[${cf.id}].holdingAccountId yatim pasca-migrasi.`);
+    }
+    if (!afterTxIds.has(cf.receiptTransactionId)) {
+      invariantErrors.push(`custodialFunds[${cf.id}].receiptTransactionId yatim pasca-migrasi.`);
+    }
+    for (const alloc of cf.fundAllocations ?? []) {
+      if (!afterAccountIds.has(alloc.accountId)) {
+        invariantErrors.push(`custodialFunds[${cf.id}].fundAllocations.accountId "${alloc.accountId}" yatim pasca-migrasi.`);
+      }
+    }
+    for (const ret of cf.returns ?? []) {
+      if (!afterAccountIds.has(ret.accountId) || !afterTxIds.has(ret.transactionId)) {
+        invariantErrors.push(`custodialFunds[${cf.id}].returns[${ret.id}] memiliki FK yatim pasca-migrasi.`);
+      }
+    }
+  }
+
+  for (const pa of after.projectAdvances ?? []) {
+    if (!afterProjectIds.has(pa.projectId)) {
+      invariantErrors.push(`projectAdvances[${pa.id}].projectId yatim pasca-migrasi.`);
+    }
+    if (!afterAccountIds.has(pa.holdingAccountId)) {
+      invariantErrors.push(`projectAdvances[${pa.id}].holdingAccountId yatim pasca-migrasi.`);
+    }
+    if (!afterTxIds.has(pa.receiptTransactionId)) {
+      invariantErrors.push(`projectAdvances[${pa.id}].receiptTransactionId yatim pasca-migrasi.`);
+    }
+    for (const alloc of pa.fundAllocations ?? []) {
+      if (!afterAccountIds.has(alloc.accountId)) {
+        invariantErrors.push(`projectAdvances[${pa.id}].fundAllocations.accountId "${alloc.accountId}" yatim pasca-migrasi.`);
+      }
+    }
+    for (const rec of pa.recognitions ?? []) {
+      if (!afterTxIds.has(rec.transactionId)) {
+        invariantErrors.push(`projectAdvances[${pa.id}].recognitions[${rec.id}].transactionId yatim pasca-migrasi.`);
+      }
+      for (const delta of rec.allocationDeltas ?? []) {
+        if (!afterAccountIds.has(delta.accountId)) {
+          invariantErrors.push(`projectAdvances[${pa.id}].recognitions[${rec.id}].allocationDeltas.accountId yatim pasca-migrasi.`);
+        }
+      }
+    }
+    for (const ref of pa.refunds ?? []) {
+      if (!afterAccountIds.has(ref.accountId) || !afterTxIds.has(ref.transactionId)) {
+        invariantErrors.push(`projectAdvances[${pa.id}].refunds[${ref.id}] memiliki FK yatim pasca-migrasi.`);
+      }
+    }
+  }
+
+  for (const asset of after.physicalAssets ?? []) {
+    if (asset.accountId && !afterAccountIds.has(asset.accountId)) {
+      invariantErrors.push(`physicalAssets[${asset.id}].accountId yatim pasca-migrasi.`);
+    }
+    if (asset.purchaseTransactionId && !afterTxIds.has(asset.purchaseTransactionId)) {
+      invariantErrors.push(`physicalAssets[${asset.id}].purchaseTransactionId yatim pasca-migrasi.`);
+    }
+    if (asset.downPaymentTransactionId && !afterTxIds.has(asset.downPaymentTransactionId)) {
+      invariantErrors.push(`physicalAssets[${asset.id}].downPaymentTransactionId yatim pasca-migrasi.`);
+    }
+    if (asset.purchaseDebtId && !afterDebtIds.has(asset.purchaseDebtId)) {
+      invariantErrors.push(`physicalAssets[${asset.id}].purchaseDebtId yatim pasca-migrasi.`);
+    }
+    if (asset.disposal) {
+      if (asset.disposal.saleAccountId && !afterAccountIds.has(asset.disposal.saleAccountId)) {
+        invariantErrors.push(`physicalAssets[${asset.id}].disposal.saleAccountId yatim pasca-migrasi.`);
+      }
+      if (asset.disposal.saleTransactionId && !afterTxIds.has(asset.disposal.saleTransactionId)) {
+        invariantErrors.push(`physicalAssets[${asset.id}].disposal.saleTransactionId yatim pasca-migrasi.`);
+      }
+      if (asset.disposal.receivableId && !afterDebtIds.has(asset.disposal.receivableId)) {
+        invariantErrors.push(`physicalAssets[${asset.id}].disposal.receivableId yatim pasca-migrasi.`);
+      }
+    }
+    for (const lr of asset.lossHistory ?? []) {
+      if (lr.loanId && !afterPhysicalLoanIds.has(lr.loanId)) {
+        invariantErrors.push(`physicalAssets[${asset.id}].lossHistory[${lr.id}].loanId yatim pasca-migrasi.`);
+      }
+      if (lr.compensationDebtId && !afterDebtIds.has(lr.compensationDebtId)) {
+        invariantErrors.push(`physicalAssets[${asset.id}].lossHistory[${lr.id}].compensationDebtId yatim pasca-migrasi.`);
+      }
+    }
+  }
+
+  for (const loan of after.physicalItemLoans ?? []) {
+    if (loan.assetId && !afterAssetIds.has(loan.assetId)) {
+      invariantErrors.push(`physicalItemLoans[${loan.id}].assetId yatim pasca-migrasi.`);
+    }
+    if (loan.compensationDebtId && !afterDebtIds.has(loan.compensationDebtId)) {
+      invariantErrors.push(`physicalItemLoans[${loan.id}].compensationDebtId yatim pasca-migrasi.`);
+    }
   }
 
   for (const tr of after.transfers) {
     if (!afterAccountIds.has(tr.fromAccountId) || !afterAccountIds.has(tr.toAccountId)) {
       invariantErrors.push(`transfers[${tr.id}] memiliki accountId yatim pasca-migrasi.`);
+    }
+    for (const mv of tr.restrictedMovements ?? []) {
+      if (mv.fundType === 'custodial' && !afterCustodialIds.has(mv.fundId)) {
+        invariantErrors.push(`transfers[${tr.id}].restrictedMovements.fundId "${mv.fundId}" (custodial) yatim pasca-migrasi.`);
+      }
+      if (mv.fundType === 'project_advance' && !afterAdvanceIds.has(mv.fundId)) {
+        invariantErrors.push(`transfers[${tr.id}].restrictedMovements.fundId "${mv.fundId}" (project_advance) yatim pasca-migrasi.`);
+      }
     }
   }
 
@@ -781,6 +1007,9 @@ function verifyPostMigrationInvariants(
     if (pe.transactionId && !afterTxIds.has(pe.transactionId)) {
       invariantErrors.push(`projectExpenses[${pe.id}].transactionId yatim pasca-migrasi.`);
     }
+    if (pe.linkedReceivableId && !afterDebtIds.has(pe.linkedReceivableId)) {
+      invariantErrors.push(`projectExpenses[${pe.id}].linkedReceivableId "${pe.linkedReceivableId}" yatim pasca-migrasi.`);
+    }
   }
 
   for (const dp of after.debtPayments) {
@@ -795,6 +1024,9 @@ function verifyPostMigrationInvariants(
   for (const ob of after.obligations) {
     if (ob.reallocatedToGoalId && !afterGoalIds.has(ob.reallocatedToGoalId)) {
       invariantErrors.push(`obligations[${ob.id}].reallocatedToGoalId yatim pasca-migrasi.`);
+    }
+    if (ob.linkedDebtId && !afterDebtIds.has(ob.linkedDebtId)) {
+      invariantErrors.push(`obligations[${ob.id}].linkedDebtId "${ob.linkedDebtId}" yatim pasca-migrasi.`);
     }
   }
 
@@ -873,6 +1105,11 @@ export function migrateFinanceStateToUUID(
     debts: buildCollectionLookup(clone.debts, 'debts', statsCounter),
     obligations: buildCollectionLookup(clone.obligations, 'obligations', statsCounter),
     goals: buildCollectionLookup(clone.goals, 'goals', statsCounter),
+    splitBills: buildCollectionLookup(clone.splitBills ?? [], 'splitBills', statsCounter),
+    custodialFunds: buildCollectionLookup(clone.custodialFunds ?? [], 'custodialFunds', statsCounter),
+    projectAdvances: buildCollectionLookup(clone.projectAdvances ?? [], 'projectAdvances', statsCounter),
+    physicalAssets: buildCollectionLookup(clone.physicalAssets ?? [], 'physicalAssets', statsCounter),
+    physicalItemLoans: buildCollectionLookup(clone.physicalItemLoans ?? [], 'physicalItemLoans', statsCounter),
     transactions: buildCollectionLookup(clone.transactions, 'transactions', statsCounter),
     transfers: buildCollectionLookup(clone.transfers, 'transfers', statsCounter),
     projectPayments: buildCollectionLookup(clone.projectPayments, 'projectPayments', statsCounter),
@@ -895,6 +1132,11 @@ export function migrateFinanceStateToUUID(
     debts: lookups.debts.exactMap,
     obligations: lookups.obligations.exactMap,
     goals: lookups.goals.exactMap,
+    splitBills: lookups.splitBills.exactMap,
+    custodialFunds: lookups.custodialFunds.exactMap,
+    projectAdvances: lookups.projectAdvances.exactMap,
+    physicalAssets: lookups.physicalAssets.exactMap,
+    physicalItemLoans: lookups.physicalItemLoans.exactMap,
     transactions: lookups.transactions.exactMap,
     transfers: lookups.transfers.exactMap,
     projectPayments: lookups.projectPayments.exactMap,
@@ -904,6 +1146,21 @@ export function migrateFinanceStateToUUID(
     goalContributions: lookups.goalContributions.exactMap,
     changeLogs: lookups.changeLogs.exactMap,
     customReminders: lookups.customReminders.exactMap,
+  };
+
+  const ledgerGroupMap = new Map<string, string>();
+  const resolveLedgerGroupId = (oldGroupId: string | undefined): string | undefined => {
+    if (!oldGroupId) return undefined;
+    if (isValidUUID(oldGroupId)) return oldGroupId.toLowerCase();
+    const existing = ledgerGroupMap.get(oldGroupId);
+    if (existing) return existing;
+    const generated = generateId().toLowerCase();
+    ledgerGroupMap.set(oldGroupId, generated);
+    return generated;
+  };
+  const remapNestedEntryId = (oldId: string): string => {
+    if (isValidUUID(oldId)) return oldId.toLowerCase();
+    return generateId().toLowerCase();
   };
 
   const orphanErrors: string[] = [];
@@ -988,6 +1245,50 @@ export function migrateFinanceStateToUUID(
         `debts[${debt.id}].projectPaymentId`,
         orphanErrors
       ),
+      projectExpenseId: resolveOptionalForeignKey(
+        debt.projectExpenseId,
+        lookups.projectExpenses,
+        `debts[${debt.id}].projectExpenseId`,
+        orphanErrors
+      ),
+      splitBillId: resolveOptionalForeignKey(
+        debt.splitBillId,
+        lookups.splitBills,
+        `debts[${debt.id}].splitBillId`,
+        orphanErrors
+      ),
+      linkedDebtId: resolveOptionalForeignKey(
+        debt.linkedDebtId,
+        lookups.debts,
+        `debts[${debt.id}].linkedDebtId`,
+        orphanErrors
+      ),
+      assetId: resolveOptionalForeignKey(
+        debt.assetId,
+        lookups.physicalAssets,
+        `debts[${debt.id}].assetId`,
+        orphanErrors
+      ),
+      physicalLoanId: resolveOptionalForeignKey(
+        debt.physicalLoanId,
+        lookups.physicalItemLoans,
+        `debts[${debt.id}].physicalLoanId`,
+        orphanErrors
+      ),
+      ...(debt.writeOffHistory !== undefined
+        ? {
+            writeOffHistory: debt.writeOffHistory.map((wh) => ({
+              ...wh,
+              id: remapNestedEntryId(wh.id),
+              transactionId: resolveOptionalForeignKey(
+                wh.transactionId,
+                lookups.transactions,
+                `debts[${debt.id}].writeOffHistory[${wh.id}].transactionId`,
+                orphanErrors
+              ),
+            })),
+          }
+        : {}),
       updatedAt: debt.updatedAt ?? nowISO,
     };
     if (systemKey) {
@@ -1030,6 +1331,12 @@ export function migrateFinanceStateToUUID(
         `obligations[${ob.id}].reallocatedToGoalId`,
         orphanErrors
       ),
+      linkedDebtId: resolveOptionalForeignKey(
+        ob.linkedDebtId,
+        lookups.debts,
+        `obligations[${ob.id}].linkedDebtId`,
+        orphanErrors
+      ),
       updatedAt: ob.updatedAt ?? nowISO,
     };
     if (systemKey) {
@@ -1068,8 +1375,329 @@ export function migrateFinanceStateToUUID(
       `transactions[${tx.id}].debtId`,
       orphanErrors
     ),
+    splitBillId: resolveOptionalForeignKey(
+      tx.splitBillId,
+      lookups.splitBills,
+      `transactions[${tx.id}].splitBillId`,
+      orphanErrors
+    ),
+    custodialFundId: resolveOptionalForeignKey(
+      tx.custodialFundId,
+      lookups.custodialFunds,
+      `transactions[${tx.id}].custodialFundId`,
+      orphanErrors
+    ),
+    projectAdvanceId: resolveOptionalForeignKey(
+      tx.projectAdvanceId,
+      lookups.projectAdvances,
+      `transactions[${tx.id}].projectAdvanceId`,
+      orphanErrors
+    ),
+    assetId: resolveOptionalForeignKey(
+      tx.assetId,
+      lookups.physicalAssets,
+      `transactions[${tx.id}].assetId`,
+      orphanErrors
+    ),
+    physicalLoanId: resolveOptionalForeignKey(
+      tx.physicalLoanId,
+      lookups.physicalItemLoans,
+      `transactions[${tx.id}].physicalLoanId`,
+      orphanErrors
+    ),
+    parentTransactionId: resolveOptionalForeignKey(
+      tx.parentTransactionId,
+      lookups.transactions,
+      `transactions[${tx.id}].parentTransactionId`,
+      orphanErrors
+    ),
+    ledgerGroupId: resolveLedgerGroupId(tx.ledgerGroupId),
     updatedAt: tx.updatedAt ?? nowISO,
   }));
+
+  const splitBills: SplitBill[] | undefined = clone.splitBills
+    ? clone.splitBills.map((sb) => ({
+        ...sb,
+        id: idMap.splitBills[sb.id],
+        categoryId: resolveRequiredForeignKey(
+          sb.categoryId,
+          lookups.categories,
+          `splitBills[${sb.id}].categoryId`,
+          orphanErrors
+        ),
+        accountId: resolveRequiredForeignKey(
+          sb.accountId,
+          lookups.accounts,
+          `splitBills[${sb.id}].accountId`,
+          orphanErrors
+        ),
+        paymentTransactionId: resolveRequiredForeignKey(
+          sb.paymentTransactionId,
+          lookups.transactions,
+          `splitBills[${sb.id}].paymentTransactionId`,
+          orphanErrors
+        ),
+        personalShareTransactionId: resolveOptionalForeignKey(
+          sb.personalShareTransactionId,
+          lookups.transactions,
+          `splitBills[${sb.id}].personalShareTransactionId`,
+          orphanErrors
+        ),
+        ledgerGroupId: resolveLedgerGroupId(sb.ledgerGroupId) ?? generateId().toLowerCase(),
+        participants: sb.participants.map((p) => ({
+          ...p,
+          id: remapNestedEntryId(p.id),
+          debtId: resolveRequiredForeignKey(
+            p.debtId,
+            lookups.debts,
+            `splitBills[${sb.id}].participants[${p.id}].debtId`,
+            orphanErrors
+          ),
+        })),
+        updatedAt: sb.updatedAt ?? nowISO,
+      }))
+    : undefined;
+
+  const custodialFunds: CustodialFund[] | undefined = clone.custodialFunds
+    ? clone.custodialFunds.map((cf) => ({
+        ...cf,
+        id: idMap.custodialFunds[cf.id],
+        holdingAccountId: resolveRequiredForeignKey(
+          cf.holdingAccountId,
+          lookups.accounts,
+          `custodialFunds[${cf.id}].holdingAccountId`,
+          orphanErrors
+        ),
+        receiptTransactionId: resolveRequiredForeignKey(
+          cf.receiptTransactionId,
+          lookups.transactions,
+          `custodialFunds[${cf.id}].receiptTransactionId`,
+          orphanErrors
+        ),
+        ledgerGroupId: resolveLedgerGroupId(cf.ledgerGroupId) ?? generateId().toLowerCase(),
+        fundAllocations: (cf.fundAllocations ?? []).map((alloc) => ({
+          ...alloc,
+          accountId: resolveRequiredForeignKey(
+            alloc.accountId,
+            lookups.accounts,
+            `custodialFunds[${cf.id}].fundAllocations.accountId`,
+            orphanErrors
+          ),
+        })),
+        returns: (cf.returns ?? []).map((ret) => ({
+          ...ret,
+          id: remapNestedEntryId(ret.id),
+          accountId: resolveRequiredForeignKey(
+            ret.accountId,
+            lookups.accounts,
+            `custodialFunds[${cf.id}].returns[${ret.id}].accountId`,
+            orphanErrors
+          ),
+          transactionId: resolveRequiredForeignKey(
+            ret.transactionId,
+            lookups.transactions,
+            `custodialFunds[${cf.id}].returns[${ret.id}].transactionId`,
+            orphanErrors
+          ),
+        })),
+        updatedAt: cf.updatedAt ?? nowISO,
+      }))
+    : undefined;
+
+  const projectAdvances: ProjectAdvance[] | undefined = clone.projectAdvances
+    ? clone.projectAdvances.map((pa) => ({
+        ...pa,
+        id: idMap.projectAdvances[pa.id],
+        projectId: resolveRequiredForeignKey(
+          pa.projectId,
+          lookups.projects,
+          `projectAdvances[${pa.id}].projectId`,
+          orphanErrors
+        ),
+        holdingAccountId: resolveRequiredForeignKey(
+          pa.holdingAccountId,
+          lookups.accounts,
+          `projectAdvances[${pa.id}].holdingAccountId`,
+          orphanErrors
+        ),
+        receiptTransactionId: resolveRequiredForeignKey(
+          pa.receiptTransactionId,
+          lookups.transactions,
+          `projectAdvances[${pa.id}].receiptTransactionId`,
+          orphanErrors
+        ),
+        ledgerGroupId: resolveLedgerGroupId(pa.ledgerGroupId) ?? generateId().toLowerCase(),
+        fundAllocations: (pa.fundAllocations ?? []).map((alloc) => ({
+          ...alloc,
+          accountId: resolveRequiredForeignKey(
+            alloc.accountId,
+            lookups.accounts,
+            `projectAdvances[${pa.id}].fundAllocations.accountId`,
+            orphanErrors
+          ),
+        })),
+        recognitions: (pa.recognitions ?? []).map((rec) => ({
+          ...rec,
+          id: remapNestedEntryId(rec.id),
+          transactionId: resolveRequiredForeignKey(
+            rec.transactionId,
+            lookups.transactions,
+            `projectAdvances[${pa.id}].recognitions[${rec.id}].transactionId`,
+            orphanErrors
+          ),
+          ...(rec.allocationDeltas !== undefined
+            ? {
+                allocationDeltas: rec.allocationDeltas.map((delta) => ({
+                  ...delta,
+                  accountId: resolveRequiredForeignKey(
+                    delta.accountId,
+                    lookups.accounts,
+                    `projectAdvances[${pa.id}].recognitions[${rec.id}].allocationDeltas.accountId`,
+                    orphanErrors
+                  ),
+                })),
+              }
+            : {}),
+        })),
+        refunds: (pa.refunds ?? []).map((ref) => ({
+          ...ref,
+          id: remapNestedEntryId(ref.id),
+          accountId: resolveRequiredForeignKey(
+            ref.accountId,
+            lookups.accounts,
+            `projectAdvances[${pa.id}].refunds[${ref.id}].accountId`,
+            orphanErrors
+          ),
+          transactionId: resolveRequiredForeignKey(
+            ref.transactionId,
+            lookups.transactions,
+            `projectAdvances[${pa.id}].refunds[${ref.id}].transactionId`,
+            orphanErrors
+          ),
+        })),
+        updatedAt: pa.updatedAt ?? nowISO,
+      }))
+    : undefined;
+
+  const lossRecordIdMap = new Map<string, string>();
+  const physicalAssets: PhysicalAsset[] | undefined = clone.physicalAssets
+    ? clone.physicalAssets.map((pa) => {
+        const remappedLosses = (pa.lossHistory ?? []).map((lr) => {
+          const nextLossId = remapNestedEntryId(lr.id);
+          lossRecordIdMap.set(lr.id, nextLossId);
+          return {
+            ...lr,
+            id: nextLossId,
+            loanId: resolveOptionalForeignKey(
+              lr.loanId,
+              lookups.physicalItemLoans,
+              `physicalAssets[${pa.id}].lossHistory[${lr.id}].loanId`,
+              orphanErrors
+            ),
+            compensationDebtId: resolveOptionalForeignKey(
+              lr.compensationDebtId,
+              lookups.debts,
+              `physicalAssets[${pa.id}].lossHistory[${lr.id}].compensationDebtId`,
+              orphanErrors
+            ),
+          };
+        });
+        return {
+          ...pa,
+          id: idMap.physicalAssets[pa.id],
+          accountId: resolveOptionalForeignKey(
+            pa.accountId,
+            lookups.accounts,
+            `physicalAssets[${pa.id}].accountId`,
+            orphanErrors
+          ),
+          purchaseTransactionId: resolveOptionalForeignKey(
+            pa.purchaseTransactionId,
+            lookups.transactions,
+            `physicalAssets[${pa.id}].purchaseTransactionId`,
+            orphanErrors
+          ),
+          downPaymentTransactionId: resolveOptionalForeignKey(
+            pa.downPaymentTransactionId,
+            lookups.transactions,
+            `physicalAssets[${pa.id}].downPaymentTransactionId`,
+            orphanErrors
+          ),
+          purchaseDebtId: resolveOptionalForeignKey(
+            pa.purchaseDebtId,
+            lookups.debts,
+            `physicalAssets[${pa.id}].purchaseDebtId`,
+            orphanErrors
+          ),
+          ledgerGroupId: resolveLedgerGroupId(pa.ledgerGroupId) ?? generateId().toLowerCase(),
+          conditionHistory: (pa.conditionHistory ?? []).map((ch) => ({
+            ...ch,
+            id: remapNestedEntryId(ch.id),
+          })),
+          ...(pa.disposal !== undefined
+            ? {
+                disposal: {
+                  ...pa.disposal,
+                  saleAccountId: resolveOptionalForeignKey(
+                    pa.disposal.saleAccountId,
+                    lookups.accounts,
+                    `physicalAssets[${pa.id}].disposal.saleAccountId`,
+                    orphanErrors
+                  ),
+                  saleTransactionId: resolveOptionalForeignKey(
+                    pa.disposal.saleTransactionId,
+                    lookups.transactions,
+                    `physicalAssets[${pa.id}].disposal.saleTransactionId`,
+                    orphanErrors
+                  ),
+                  receivableId: resolveOptionalForeignKey(
+                    pa.disposal.receivableId,
+                    lookups.debts,
+                    `physicalAssets[${pa.id}].disposal.receivableId`,
+                    orphanErrors
+                  ),
+                },
+              }
+            : {}),
+          lossHistory: remappedLosses,
+          recoveryHistory: (pa.recoveryHistory ?? []).map((rr) => ({
+            ...rr,
+            id: remapNestedEntryId(rr.id),
+            lossRecordId: rr.lossRecordId
+              ? lossRecordIdMap.get(rr.lossRecordId) ?? rr.lossRecordId
+              : undefined,
+          })),
+          updatedAt: pa.updatedAt ?? nowISO,
+        };
+      })
+    : undefined;
+
+  const physicalItemLoans: PhysicalItemLoan[] | undefined = clone.physicalItemLoans
+    ? clone.physicalItemLoans.map((pl) => ({
+        ...pl,
+        id: idMap.physicalItemLoans[pl.id],
+        assetId: resolveOptionalForeignKey(
+          pl.assetId,
+          lookups.physicalAssets,
+          `physicalItemLoans[${pl.id}].assetId`,
+          orphanErrors
+        ),
+        compensationDebtId: resolveOptionalForeignKey(
+          pl.compensationDebtId,
+          lookups.debts,
+          `physicalItemLoans[${pl.id}].compensationDebtId`,
+          orphanErrors
+        ),
+        lossRecordId: pl.lossRecordId
+          ? lossRecordIdMap.get(pl.lossRecordId) ?? pl.lossRecordId
+          : undefined,
+        conditionHistory: (pl.conditionHistory ?? []).map((ch) => ({
+          ...ch,
+          id: remapNestedEntryId(ch.id),
+        })),
+        updatedAt: pl.updatedAt ?? nowISO,
+      }))
+    : undefined;
 
   const transfers: AccountTransfer[] = clone.transfers.map((tr) => ({
     ...tr,
@@ -1086,6 +1714,19 @@ export function migrateFinanceStateToUUID(
       `transfers[${tr.id}].toAccountId`,
       orphanErrors
     ),
+    ...(tr.restrictedMovements !== undefined
+      ? {
+          restrictedMovements: tr.restrictedMovements.map((mv) => ({
+            ...mv,
+            fundId: resolveRequiredForeignKey(
+              mv.fundId,
+              mv.fundType === 'custodial' ? lookups.custodialFunds : lookups.projectAdvances,
+              `transfers[${tr.id}].restrictedMovements.fundId`,
+              orphanErrors
+            ),
+          })),
+        }
+      : {}),
     updatedAt: tr.updatedAt ?? nowISO,
   }));
 
@@ -1132,6 +1773,12 @@ export function migrateFinanceStateToUUID(
       pe.transactionId,
       lookups.transactions,
       `projectExpenses[${pe.id}].transactionId`,
+      orphanErrors
+    ),
+    linkedReceivableId: resolveOptionalForeignKey(
+      pe.linkedReceivableId,
+      lookups.debts,
+      `projectExpenses[${pe.id}].linkedReceivableId`,
       orphanErrors
     ),
     updatedAt: pe.updatedAt ?? nowISO,
@@ -1262,6 +1909,11 @@ export function migrateFinanceStateToUUID(
     projectExpenses,
     debts,
     debtPayments,
+    ...(splitBills !== undefined ? { splitBills } : {}),
+    ...(custodialFunds !== undefined ? { custodialFunds } : {}),
+    ...(projectAdvances !== undefined ? { projectAdvances } : {}),
+    ...(physicalAssets !== undefined ? { physicalAssets } : {}),
+    ...(physicalItemLoans !== undefined ? { physicalItemLoans } : {}),
     obligations,
     obligationLogs,
     goals,
@@ -1294,6 +1946,11 @@ export function migrateFinanceStateToUUID(
     projectExpenses: migratedState.projectExpenses.length,
     debts: migratedState.debts.length,
     debtPayments: migratedState.debtPayments.length,
+    splitBills: (migratedState.splitBills ?? []).length,
+    custodialFunds: (migratedState.custodialFunds ?? []).length,
+    projectAdvances: (migratedState.projectAdvances ?? []).length,
+    physicalAssets: (migratedState.physicalAssets ?? []).length,
+    physicalItemLoans: (migratedState.physicalItemLoans ?? []).length,
     obligations: migratedState.obligations.length,
     obligationLogs: migratedState.obligationLogs.length,
     goals: migratedState.goals.length,

@@ -34,7 +34,7 @@ import {
   reopenAccountAction,
   voidTransactionAction,
 } from '../hooks/financeActions';
-import { Account, FinanceState, Transaction } from '../types/finance';
+import { Account, FinanceState, ProjectExpenseKind, Transaction } from '../types/finance';
 import { formatDateID, formatIDR, todayISO } from '../utils/format';
 import {
   getTransactionAccountDisplay,
@@ -87,6 +87,10 @@ export const TransactionsAndProjectsView: React.FC<TransactionsAndProjectsViewPr
   const [projDate, setProjDate] = useState(todayISO());
   const [projAccountId, setProjAccountId] = useState('acc-business');
   const [projTargetPersonalAccId, setProjTargetPersonalAccId] = useState('acc-bank');
+  const [projExpenseKind, setProjExpenseKind] = useState<ProjectExpenseKind>('project_cost');
+  const [projReimbCreditor, setProjReimbCreditor] = useState('');
+  const [projReimbDueDate, setProjReimbDueDate] = useState('');
+  const [projActionError, setProjActionError] = useState<string | null>(null);
 
   // Account Create/Edit/Archive/Close/Reconcile state
   const [showAccForm, setShowAccForm] = useState(false);
@@ -162,43 +166,54 @@ export const TransactionsAndProjectsView: React.FC<TransactionsAndProjectsViewPr
   const handleProjectActionSubmit = (e: React.FormEvent) => {
     e.preventDefault();
     if (!activeProjAction) return;
+    setProjActionError(null);
     const amt = Number(projAmount) || 0;
     if (amt <= 0) return;
 
-    if (activeProjAction.mode === 'payment') {
-      const next = addProjectPaymentAction(state, {
-        projectId: activeProjAction.projectId,
-        paymentType: projPayType,
-        amount: amt,
-        status: projPayStatus,
-        date: projDate,
-        accountId: projAccountId,
-        notes: projDesc,
-      });
-      onCommit(next);
-    } else if (activeProjAction.mode === 'expense') {
-      const next = addProjectExpenseAction(state, {
-        projectId: activeProjAction.projectId,
-        description: projDesc || 'Biaya operasional proyek',
-        amount: amt,
-        date: projDate,
-        accountId: projAccountId,
-      });
-      onCommit(next);
-    } else if (activeProjAction.mode === 'distribute') {
-      const next = distributeProjectPersonalShareAction(state, {
-        projectId: activeProjAction.projectId,
-        amount: amt,
-        fromAccountId: 'acc-business',
-        toAccountId: projTargetPersonalAccId,
-        date: projDate,
-      });
-      onCommit(next);
-    }
+    try {
+      if (activeProjAction.mode === 'payment') {
+        const next = addProjectPaymentAction(state, {
+          projectId: activeProjAction.projectId,
+          paymentType: projPayType,
+          amount: amt,
+          status: projPayStatus,
+          date: projDate,
+          accountId: projAccountId,
+          notes: projDesc,
+        });
+        onCommit(next);
+      } else if (activeProjAction.mode === 'expense') {
+        const next = addProjectExpenseAction(state, {
+          projectId: activeProjAction.projectId,
+          description: projDesc || 'Biaya operasional proyek',
+          amount: amt,
+          date: projDate,
+          accountId: projAccountId,
+          expenseKind: projExpenseKind,
+          creditor: projReimbCreditor || undefined,
+          dueDate: projReimbDueDate || undefined,
+        });
+        onCommit(next);
+      } else if (activeProjAction.mode === 'distribute') {
+        const next = distributeProjectPersonalShareAction(state, {
+          projectId: activeProjAction.projectId,
+          amount: amt,
+          fromAccountId: 'acc-business',
+          toAccountId: projTargetPersonalAccId,
+          date: projDate,
+        });
+        onCommit(next);
+      }
 
-    setActiveProjAction(null);
-    setProjAmount('');
-    setProjDesc('');
+      setActiveProjAction(null);
+      setProjAmount('');
+      setProjDesc('');
+      setProjExpenseKind('project_cost');
+      setProjReimbCreditor('');
+      setProjReimbDueDate('');
+    } catch (err) {
+      setProjActionError(err instanceof Error ? err.message : 'Gagal memproses aksi proyek.');
+    }
   };
 
   const openNewAccountForm = () => {
@@ -805,6 +820,7 @@ export const TransactionsAndProjectsView: React.FC<TransactionsAndProjectsViewPr
                             setActiveProjAction({ projectId: ps.project.id, mode: 'payment' });
                             setProjAmount('');
                             setProjDesc('');
+                            setProjActionError(null);
                           }}
                           className="rounded-lg border border-[#B9E2F5] bg-[#E8F6FC] px-3 py-1.5 text-xs font-semibold text-[#0976A6] hover:bg-[#D5EEF9]"
                         >
@@ -816,6 +832,10 @@ export const TransactionsAndProjectsView: React.FC<TransactionsAndProjectsViewPr
                             setActiveProjAction({ projectId: ps.project.id, mode: 'expense' });
                             setProjAmount('');
                             setProjDesc('');
+                            setProjExpenseKind('project_cost');
+                            setProjReimbCreditor(ps.project.clientName);
+                            setProjReimbDueDate('');
+                            setProjActionError(null);
                           }}
                           className="rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-xs font-semibold text-slate-700 hover:bg-slate-50"
                         >
@@ -928,14 +948,54 @@ export const TransactionsAndProjectsView: React.FC<TransactionsAndProjectsViewPr
                             </>
                           )}
                           {activeProjAction.mode === 'expense' && (
-                            <input
-                              type="text"
-                              required
-                              value={projDesc}
-                              onChange={(e) => setProjDesc(e.target.value)}
-                              placeholder="Keperluan (mis. Domain .com)"
-                              className="rounded-lg border border-slate-300 bg-white px-3 py-2 text-xs sm:col-span-2"
-                            />
+                            <>
+                              <input
+                                type="text"
+                                required
+                                value={projDesc}
+                                onChange={(e) => setProjDesc(e.target.value)}
+                                placeholder="Keperluan (mis. Domain .com / Hosting klien)"
+                                className="rounded-lg border border-slate-300 bg-white px-3 py-2 text-xs sm:col-span-2"
+                              />
+                              <select
+                                value={projExpenseKind}
+                                onChange={(e) => setProjExpenseKind(e.target.value as ProjectExpenseKind)}
+                                className="rounded-lg border border-slate-300 bg-white px-3 py-2 text-xs sm:col-span-2"
+                              >
+                                <option value="project_cost">Biaya Proyek Ditanggung (Kurangi Profit)</option>
+                                <option value="pure_advance">Talangan Murni Klien (Reimbursement — Piutang)</option>
+                                <option value="pass_through">Biaya Pass-Through Klien (Tidak Mengurangi Profit / Omzet)</option>
+                              </select>
+                              <select
+                                value={projAccountId}
+                                onChange={(e) => setProjAccountId(e.target.value)}
+                                className="rounded-lg border border-slate-300 bg-white px-3 py-2 text-xs"
+                              >
+                                {snapshot.activeAccounts.map((a) => (
+                                  <option key={a.id} value={a.id}>
+                                    Akun: {a.name} ({formatIDR(a.currentBalance)})
+                                  </option>
+                                ))}
+                              </select>
+                              {projExpenseKind !== 'project_cost' && (
+                                <>
+                                  <input
+                                    type="text"
+                                    value={projReimbCreditor}
+                                    onChange={(e) => setProjReimbCreditor(e.target.value)}
+                                    placeholder="Nama Klien Penanggung"
+                                    className="rounded-lg border border-slate-300 bg-white px-3 py-2 text-xs sm:col-span-2"
+                                  />
+                                  <input
+                                    type="date"
+                                    value={projReimbDueDate}
+                                    onChange={(e) => setProjReimbDueDate(e.target.value)}
+                                    title="Jatuh tempo penggantian (opsional)"
+                                    className="rounded-lg border border-slate-300 bg-white px-3 py-2 text-xs"
+                                  />
+                                </>
+                              )}
+                            </>
                           )}
                           {activeProjAction.mode === 'distribute' && (
                             <select
@@ -953,6 +1013,17 @@ export const TransactionsAndProjectsView: React.FC<TransactionsAndProjectsViewPr
                             </select>
                           )}
                         </div>
+                        {activeProjAction.mode === 'expense' && projExpenseKind !== 'project_cost' && (
+                          <p className="text-[11px] text-[#075D83]">
+                            Talangan / biaya pass-through mengurangi kas saat dikeluarkan dan membuat{' '}
+                            <strong>Piutang Reimbursement Proyek</strong> otomatis. Saat diganti klien, kas bertambah tanpa menghitung ulang pendapatan proyek atau konsumsi.
+                          </p>
+                        )}
+                        {projActionError && (
+                          <p className="rounded-lg border border-red-200 bg-red-50 px-3 py-1.5 text-[11px] font-semibold text-red-700">
+                            {projActionError}
+                          </p>
+                        )}
                         <div className="flex items-center justify-between gap-2">
                           <input
                             type="date"
@@ -963,7 +1034,10 @@ export const TransactionsAndProjectsView: React.FC<TransactionsAndProjectsViewPr
                           <div className="flex gap-2">
                             <button
                               type="button"
-                              onClick={() => setActiveProjAction(null)}
+                              onClick={() => {
+                                setActiveProjAction(null);
+                                setProjActionError(null);
+                              }}
                               className="rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-xs font-semibold text-slate-600"
                             >
                               Batal
@@ -1029,24 +1103,45 @@ export const TransactionsAndProjectsView: React.FC<TransactionsAndProjectsViewPr
                           ))}
                         </div>
                         <div className="space-y-1.5">
-                          <p className="font-bold text-slate-700">Biaya Operasional Proyek</p>
+                          <div className="flex items-center justify-between">
+                            <p className="font-bold text-slate-700">Biaya Operasional &amp; Talangan Proyek</p>
+                            {ps.reimbursableAdvancesTotal > 0 && (
+                              <span className="rounded bg-[#E8F6FC] px-2 py-0.5 text-[10px] font-semibold text-[#0976A6]">
+                                Talangan Klien: {formatIDR(ps.reimbursableAdvancesTotal)}
+                              </span>
+                            )}
+                          </div>
                           {expenses.length === 0 ? (
                             <p className="text-slate-400">Belum ada biaya operasional tercatat.</p>
                           ) : (
-                            expenses.map((ex) => (
-                              <div
-                                key={ex.id}
-                                className="flex items-center justify-between rounded-lg bg-slate-50 px-3 py-2"
-                              >
-                                <div>
-                                  <p className="font-semibold text-slate-900">{ex.description}</p>
-                                  <p className="text-[11px] text-slate-500">{formatDateID(ex.date)}</p>
+                            expenses.map((ex) => {
+                              const expKind = ex.expenseKind ?? 'project_cost';
+                              return (
+                                <div
+                                  key={ex.id}
+                                  className="flex items-center justify-between rounded-lg bg-slate-50 px-3 py-2"
+                                >
+                                  <div>
+                                    <div className="flex items-center gap-1.5">
+                                      <p className="font-semibold text-slate-900">{ex.description}</p>
+                                      {expKind !== 'project_cost' && (
+                                        <span className="rounded bg-[#E8F6FC] px-1.5 py-0.5 text-[10px] font-semibold text-[#0976A6]">
+                                          {expKind === 'pass_through' ? 'Pass-Through' : 'Reimbursement'}
+                                        </span>
+                                      )}
+                                    </div>
+                                    <p className="text-[11px] text-slate-500">{formatDateID(ex.date)}</p>
+                                  </div>
+                                  <span
+                                    className={`font-mono-num font-bold ${
+                                      expKind === 'project_cost' ? 'text-red-700' : 'text-[#0976A6]'
+                                    }`}
+                                  >
+                                    -{formatIDR(ex.amount)}
+                                  </span>
                                 </div>
-                                <span className="font-mono-num font-bold text-red-700">
-                                  -{formatIDR(ex.amount)}
-                                </span>
-                              </div>
-                            ))
+                              );
+                            })
                           )}
                         </div>
                       </div>

@@ -147,6 +147,11 @@ export function hydrateFinanceState(rawState: Partial<FinanceState>): FinanceSta
         }))
       : base.debts,
     debtPayments: Array.isArray(rawState.debtPayments) ? rawState.debtPayments : [],
+    splitBills: Array.isArray(rawState.splitBills) ? rawState.splitBills : [],
+    custodialFunds: Array.isArray(rawState.custodialFunds) ? rawState.custodialFunds : [],
+    projectAdvances: Array.isArray(rawState.projectAdvances) ? rawState.projectAdvances : [],
+    physicalAssets: Array.isArray(rawState.physicalAssets) ? rawState.physicalAssets : [],
+    physicalItemLoans: Array.isArray(rawState.physicalItemLoans) ? rawState.physicalItemLoans : [],
     obligations: deduplicateActiveObligations(rawObs),
     obligationLogs: Array.isArray(rawState.obligationLogs) ? rawState.obligationLogs : [],
     goals: Array.isArray(rawState.goals)
@@ -203,6 +208,11 @@ export function mergeFinanceStatesById(local: FinanceState, remote: FinanceState
     projectExpenses: unionById(primary.projectExpenses, secondary.projectExpenses),
     debts: unionById(primary.debts, secondary.debts),
     debtPayments: unionById(primary.debtPayments, secondary.debtPayments),
+    splitBills: unionById(primary.splitBills ?? [], secondary.splitBills ?? []),
+    custodialFunds: unionById(primary.custodialFunds ?? [], secondary.custodialFunds ?? []),
+    projectAdvances: unionById(primary.projectAdvances ?? [], secondary.projectAdvances ?? []),
+    physicalAssets: unionById(primary.physicalAssets ?? [], secondary.physicalAssets ?? []),
+    physicalItemLoans: unionById(primary.physicalItemLoans ?? [], secondary.physicalItemLoans ?? []),
     obligations: unionById(primary.obligations, secondary.obligations),
     obligationLogs: unionById(primary.obligationLogs, secondary.obligationLogs),
     goals: unionById(primary.goals, secondary.goals),

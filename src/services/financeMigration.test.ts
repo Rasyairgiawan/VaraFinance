@@ -1407,4 +1407,820 @@ describe('financeMigration — Fase 1A.1 Hardening UUID, Backup, systemKey & Inv
       expect((caught as MigrationIntegrityError).code, tc.label).toBe('ORPHAN_FOREIGN_KEY');
     }
   });
+
+  it('memigrasikan custodialFunds, projectAdvances, linkedDebtId, restrictedMovements, parentTransactionId, ledgerGroupId, dan menjaga invarian saldo', () => {
+    const state = buildRichLegacyState();
+    const projId = state.projects[0].id;
+
+    state.custodialFunds = [
+      {
+        id: 'cust-legacy-1',
+        counterparty: 'Panitia Acara',
+        description: 'Dana titipan acara',
+        initialAmount: 250000,
+        remainingAmount: 150000,
+        receivedDate: '2026-11-10',
+        holdingAccountId: 'acc-custom-seabank',
+        fundAllocations: [{ accountId: 'acc-custom-seabank', amount: 150000 }],
+        receiptTransactionId: 'tx-cust-receipt',
+        ledgerGroupId: 'grp-cust-1',
+        status: 'active',
+        returns: [
+          {
+            id: 'cust-ret-1',
+            amount: 100000,
+            date: '2026-11-11',
+            accountId: 'acc-custom-seabank',
+            transactionId: 'tx-cust-return',
+            createdAt: '2026-11-11T10:00:00Z',
+          },
+        ],
+        createdAt: '2026-11-10T10:00:00Z',
+      },
+    ];
+
+    state.projectAdvances = [
+      {
+        id: 'adv-legacy-1',
+        projectId: projId,
+        clientName: 'Klien UMKM',
+        description: 'DP Landing Page',
+        initialAmount: 500000,
+        recognizedAmount: 200000,
+        refundedAmount: 0,
+        remainingAmount: 300000,
+        receivedDate: '2026-11-10',
+        holdingAccountId: 'acc-business',
+        fundAllocations: [{ accountId: 'acc-business', amount: 300000 }],
+        receiptTransactionId: 'tx-adv-receipt',
+        ledgerGroupId: 'grp-adv-1',
+        status: 'active',
+        recognitions: [
+          {
+            id: 'adv-rec-1',
+            amount: 200000,
+            date: '2026-11-12',
+            transactionId: 'tx-adv-recognition',
+            allocationDeltas: [{ accountId: 'acc-business', amount: 200000 }],
+            createdAt: '2026-11-12T10:00:00Z',
+          },
+        ],
+        refunds: [],
+        createdAt: '2026-11-10T10:00:00Z',
+      },
+    ];
+
+    state.transactions.push(
+      {
+        id: 'tx-cust-receipt',
+        type: 'income',
+        amount: 250000,
+        categoryId: 'cat-income-other',
+        accountId: 'acc-custom-seabank',
+        date: '2026-11-10',
+        description: 'Terima titipan',
+        tags: ['dana_titipan'],
+        custodialFundId: 'cust-legacy-1',
+        ledgerGroupId: 'grp-cust-1',
+        transactionNature: 'custodial_receipt',
+        affectsAccountBalance: true,
+        excludeFromIncomeStats: true,
+        isEssential: false,
+        isDiscretionary: false,
+        exceededBudget: false,
+        createdAt: '2026-11-10T10:00:00Z',
+      },
+      {
+        id: 'tx-cust-return',
+        type: 'expense',
+        amount: 100000,
+        categoryId: 'cat-other-exp',
+        accountId: 'acc-custom-seabank',
+        date: '2026-11-11',
+        description: 'Return titipan',
+        tags: ['dana_titipan'],
+        custodialFundId: 'cust-legacy-1',
+        ledgerGroupId: 'grp-cust-1',
+        parentTransactionId: 'tx-cust-receipt',
+        transactionNature: 'custodial_return',
+        affectsAccountBalance: true,
+        excludeFromExpenseStats: true,
+        isEssential: false,
+        isDiscretionary: false,
+        exceededBudget: false,
+        createdAt: '2026-11-11T10:00:00Z',
+      },
+      {
+        id: 'tx-adv-receipt',
+        type: 'income',
+        amount: 500000,
+        categoryId: 'cat-income-other',
+        accountId: 'acc-business',
+        date: '2026-11-10',
+        description: 'Terima DP',
+        tags: ['dp_proyek'],
+        projectId: projId,
+        projectAdvanceId: 'adv-legacy-1',
+        ledgerGroupId: 'grp-adv-1',
+        transactionNature: 'project_advance_receipt',
+        affectsAccountBalance: true,
+        excludeFromIncomeStats: true,
+        isEssential: false,
+        isDiscretionary: false,
+        exceededBudget: false,
+        createdAt: '2026-11-10T10:00:00Z',
+      },
+      {
+        id: 'tx-adv-recognition',
+        type: 'income',
+        amount: 200000,
+        categoryId: 'cat-income-freelance',
+        accountId: 'acc-business',
+        date: '2026-11-12',
+        description: 'Akui DP tahap 1',
+        tags: ['dp_proyek'],
+        projectId: projId,
+        projectAdvanceId: 'adv-legacy-1',
+        ledgerGroupId: 'grp-adv-1',
+        parentTransactionId: 'tx-adv-receipt',
+        transactionNature: 'project_advance_recognition',
+        affectsAccountBalance: false,
+        excludeFromIncomeStats: false,
+        isEssential: false,
+        isDiscretionary: false,
+        exceededBudget: false,
+        createdAt: '2026-11-12T10:00:00Z',
+      }
+    );
+
+    state.transfers.push({
+      id: 'tr-cust-move',
+      fromAccountId: 'acc-custom-seabank',
+      toAccountId: 'acc-bank',
+      amount: 50000,
+      date: '2026-11-12',
+      restrictedMovements: [{ fundType: 'custodial', fundId: 'cust-legacy-1', amount: 50000 }],
+      createdAt: '2026-11-12T11:00:00Z',
+    });
+
+    state.obligations.push({
+      id: 'ob-linked-debt',
+      kind: 'obligation',
+      name: 'Cicilan Domain',
+      category: 'Utang',
+      amount: 130000,
+      frequency: 'monthly',
+      durationType: 'fixed_term',
+      startDate: '2026-11-01',
+      nextDueDate: '2026-12-01',
+      status: 'active',
+      reservedAmount: 0,
+      reminderEnabled: true,
+      reminderDaysBefore: 3,
+      linkedDebtId: 'debt-custom-hosting',
+      isActive: true,
+      createdAt: '2026-11-01T10:00:00Z',
+    });
+
+    const res1 = migrateFinanceStateToUUID(state, {
+      saveBackup: false,
+      nowISO: '2026-11-18T08:00:00.000Z',
+    });
+
+    const { migratedState, idMap } = res1;
+    const cf = migratedState.custodialFunds![0];
+    const pa = migratedState.projectAdvances![0];
+    expect(isValidUUID(cf.id)).toBe(true);
+    expect(cf.id).toBe(idMap.custodialFunds['cust-legacy-1']);
+    expect(cf.holdingAccountId).toBe(idMap.accounts['acc-custom-seabank']);
+    expect(cf.receiptTransactionId).toBe(idMap.transactions['tx-cust-receipt']);
+    expect(isValidUUID(cf.ledgerGroupId)).toBe(true);
+
+    expect(isValidUUID(pa.id)).toBe(true);
+    expect(pa.id).toBe(idMap.projectAdvances['adv-legacy-1']);
+    expect(pa.recognitions[0].transactionId).toBe(idMap.transactions['tx-adv-recognition']);
+
+    const migratedRecTx = migratedState.transactions.find(
+      (t) => t.id === idMap.transactions['tx-adv-recognition']
+    )!;
+    expect(migratedRecTx.parentTransactionId).toBe(idMap.transactions['tx-adv-receipt']);
+    expect(migratedRecTx.ledgerGroupId).toBe(pa.ledgerGroupId);
+
+    const migratedTr = migratedState.transfers.find((t) => t.id === idMap.transfers['tr-cust-move'])!;
+    expect(migratedTr.restrictedMovements![0].fundId).toBe(cf.id);
+
+    const migratedOb = migratedState.obligations.find((o) => o.id === idMap.obligations['ob-linked-debt'])!;
+    expect(migratedOb.linkedDebtId).toBe(idMap.debts['debt-custom-hosting']);
+
+    // Idempotent second run
+    const res2 = migrateFinanceStateToUUID(migratedState, {
+      saveBackup: false,
+      nowISO: '2026-11-18T09:00:00.000Z',
+    });
+    expect(res2.stats.mappedIdsCount).toBe(0);
+    expect(res2.migratedState).toEqual(migratedState);
+
+    // Rejects orphan linkedDebtId
+    const broken = buildRichLegacyState();
+    broken.obligations[0].linkedDebtId = 'debt-ghost';
+    expect(() => migrateFinanceStateToUUID(broken, { saveBackup: false })).toThrow(MigrationIntegrityError);
+  });
+
+  it('migrates Phase 2.5 entities (splitBills, linkedDebtId, projectExpenseId, projectExpenses.linkedReceivableId, changeLogs split_bill), is idempotent, and rejects orphan FKs', () => {
+    const state = buildRichLegacyState();
+    const projId = state.projects[0].id;
+
+    // 1. Legacy Split Bill + transactions + participant receivables
+    state.transactions.push(
+      {
+        id: 'tx-sb-pay',
+        type: 'expense',
+        amount: 90000,
+        categoryId: 'cat-food',
+        accountId: 'acc-cash',
+        date: '2026-11-15',
+        description: 'Split Bill Legacy',
+        tags: ['split_bill'],
+        splitBillId: 'sb-legacy-1',
+        ledgerGroupId: 'grp-sb-1',
+        transactionNature: 'split_bill_payment',
+        affectsAccountBalance: true,
+        excludeFromExpenseStats: true,
+        isEssential: false,
+        isDiscretionary: false,
+        exceededBudget: false,
+        createdAt: '2026-11-15T10:00:00Z',
+      },
+      {
+        id: 'tx-sb-share',
+        type: 'expense',
+        amount: 30000,
+        categoryId: 'cat-food',
+        accountId: 'acc-cash',
+        date: '2026-11-15',
+        description: 'Porsi Pribadi Split Bill Legacy',
+        tags: ['split_bill'],
+        splitBillId: 'sb-legacy-1',
+        ledgerGroupId: 'grp-sb-1',
+        parentTransactionId: 'tx-sb-pay',
+        transactionNature: 'split_bill_personal_share',
+        affectsAccountBalance: false,
+        excludeFromExpenseStats: false,
+        isEssential: true,
+        isDiscretionary: false,
+        exceededBudget: false,
+        createdAt: '2026-11-15T10:00:00Z',
+      },
+      {
+        id: 'tx-proj-reim',
+        type: 'expense',
+        amount: 200000,
+        categoryId: 'cat-debt',
+        accountId: 'acc-custom-seabank',
+        date: '2026-11-15',
+        description: 'Talangan Proyek Legacy',
+        tags: ['proyek', 'reimbursement'],
+        projectId: projId,
+        debtId: 'debt-reim-legacy',
+        transactionNature: 'project_reimbursement_advance',
+        affectsAccountBalance: true,
+        excludeFromExpenseStats: true,
+        isEssential: false,
+        isDiscretionary: false,
+        exceededBudget: false,
+        createdAt: '2026-11-15T11:00:00Z',
+      },
+      {
+        id: 'tx-linked-ab',
+        type: 'expense',
+        amount: 300000,
+        categoryId: 'cat-debt',
+        accountId: 'acc-cash',
+        date: '2026-11-15',
+        description: 'Teruskan A -> B Legacy',
+        tags: ['utang', 'piutang', 'pinjam_teruskan'],
+        debtId: 'debt-ab-payable',
+        ledgerGroupId: 'grp-ab-1',
+        transactionNature: 'linked_borrow_lend',
+        affectsAccountBalance: false,
+        excludeFromExpenseStats: true,
+        excludeFromIncomeStats: true,
+        isEssential: false,
+        isDiscretionary: false,
+        exceededBudget: false,
+        createdAt: '2026-11-15T12:00:00Z',
+      }
+    );
+
+    state.debts.push(
+      {
+        id: 'debt-sb-p1',
+        direction: 'receivable',
+        receivableType: 'split_bill',
+        accountId: 'acc-cash',
+        transactionId: 'tx-sb-pay',
+        splitBillId: 'sb-legacy-1',
+        revenueAlreadyRecorded: true,
+        creditor: 'Teman 1',
+        description: 'Split Bill Legacy',
+        initialAmount: 30000,
+        remainingAmount: 30000,
+        priority: 1,
+        status: 'active',
+        createdAt: '2026-11-15T10:00:00Z',
+      },
+      {
+        id: 'debt-sb-p2',
+        direction: 'receivable',
+        receivableType: 'split_bill',
+        accountId: 'acc-cash',
+        transactionId: 'tx-sb-pay',
+        splitBillId: 'sb-legacy-1',
+        revenueAlreadyRecorded: true,
+        creditor: 'Teman 2',
+        description: 'Split Bill Legacy',
+        initialAmount: 30000,
+        remainingAmount: 30000,
+        priority: 1,
+        status: 'active',
+        createdAt: '2026-11-15T10:00:00Z',
+      },
+      {
+        id: 'debt-reim-legacy',
+        direction: 'receivable',
+        receivableType: 'project_reimbursement',
+        reimbursementKind: 'pass_through',
+        accountId: 'acc-custom-seabank',
+        transactionId: 'tx-proj-reim',
+        projectId: projId,
+        projectExpenseId: 'pe-reim-legacy',
+        revenueAlreadyRecorded: true,
+        creditor: 'Klien UMKM',
+        description: 'Pass-through domain',
+        initialAmount: 200000,
+        remainingAmount: 200000,
+        priority: 1,
+        status: 'active',
+        createdAt: '2026-11-15T11:00:00Z',
+      },
+      {
+        id: 'debt-ab-payable',
+        direction: 'payable',
+        debtReceiptType: 'cash_received',
+        transactionId: 'tx-linked-ab',
+        linkedDebtId: 'debt-ab-receivable',
+        creditor: 'Pihak A',
+        description: 'Pinjam A untuk B',
+        initialAmount: 300000,
+        remainingAmount: 300000,
+        priority: 1,
+        status: 'active',
+        createdAt: '2026-11-15T12:00:00Z',
+      },
+      {
+        id: 'debt-ab-receivable',
+        direction: 'receivable',
+        receivableType: 'personal_loan',
+        transactionId: 'tx-linked-ab',
+        linkedDebtId: 'debt-ab-payable',
+        revenueAlreadyRecorded: false,
+        creditor: 'Pihak B',
+        description: 'Pinjam A untuk B',
+        initialAmount: 300000,
+        remainingAmount: 300000,
+        priority: 1,
+        status: 'active',
+        createdAt: '2026-11-15T12:00:00Z',
+      }
+    );
+
+    state.splitBills = [
+      {
+        id: 'sb-legacy-1',
+        title: 'Makan Malam Legacy',
+        date: '2026-11-15',
+        categoryId: 'cat-food',
+        accountId: 'acc-cash',
+        totalAmount: 90000,
+        userShareAmount: 30000,
+        splitMode: 'equal',
+        participants: [
+          { id: 'sb-part-1', name: 'Teman 1', shareAmount: 30000, debtId: 'debt-sb-p1' },
+          { id: 'sb-part-2', name: 'Teman 2', shareAmount: 30000, debtId: 'debt-sb-p2' },
+        ],
+        paymentTransactionId: 'tx-sb-pay',
+        personalShareTransactionId: 'tx-sb-share',
+        ledgerGroupId: 'grp-sb-1',
+        createdAt: '2026-11-15T10:00:00Z',
+      },
+    ];
+
+    state.projectExpenses.push({
+      id: 'pe-reim-legacy',
+      projectId: projId,
+      expenseKind: 'pass_through',
+      linkedReceivableId: 'debt-reim-legacy',
+      description: 'Domain & VPS klien',
+      amount: 200000,
+      date: '2026-11-15',
+      accountId: 'acc-custom-seabank',
+      transactionId: 'tx-proj-reim',
+      createdAt: '2026-11-15T11:00:00Z',
+    });
+
+    state.changeLogs = [
+      ...(state.changeLogs ?? []),
+      {
+        id: 'cl-sb-1',
+        timestamp: '2026-11-15T10:00:00Z',
+        entityType: 'split_bill',
+        entityId: 'sb-legacy-1',
+        action: 'create',
+        summary: 'Catat Split Bill Legacy',
+      },
+    ];
+
+    const balancesBefore = calculateBalancesOracle(state);
+    const res1 = migrateFinanceStateToUUID(state, {
+      saveBackup: false,
+      nowISO: '2026-11-18T10:00:00.000Z',
+    });
+
+    const { migratedState, idMap } = res1;
+    const sbMigrated = migratedState.splitBills![0];
+    expect(isValidUUID(sbMigrated.id)).toBe(true);
+    expect(sbMigrated.id).toBe(idMap.splitBills['sb-legacy-1']);
+    expect(sbMigrated.accountId).toBe(idMap.accounts['acc-cash']);
+    expect(sbMigrated.paymentTransactionId).toBe(idMap.transactions['tx-sb-pay']);
+    expect(sbMigrated.personalShareTransactionId).toBe(idMap.transactions['tx-sb-share']);
+    expect(isValidUUID(sbMigrated.ledgerGroupId)).toBe(true);
+    expect(isValidUUID(sbMigrated.participants[0].id)).toBe(true);
+    expect(sbMigrated.participants[0].debtId).toBe(idMap.debts['debt-sb-p1']);
+    expect(sbMigrated.participants[1].debtId).toBe(idMap.debts['debt-sb-p2']);
+
+    const sbTx = migratedState.transactions.find((t) => t.id === idMap.transactions['tx-sb-pay'])!;
+    expect(sbTx.splitBillId).toBe(sbMigrated.id);
+
+    const sbDebt = migratedState.debts.find((d) => d.id === idMap.debts['debt-sb-p1'])!;
+    expect(sbDebt.splitBillId).toBe(sbMigrated.id);
+
+    const reimDebt = migratedState.debts.find((d) => d.id === idMap.debts['debt-reim-legacy'])!;
+    const reimPe = migratedState.projectExpenses.find((pe) => pe.id === idMap.projectExpenses['pe-reim-legacy'])!;
+    expect(reimDebt.projectExpenseId).toBe(reimPe.id);
+    expect(reimPe.linkedReceivableId).toBe(reimDebt.id);
+
+    const payableAB = migratedState.debts.find((d) => d.id === idMap.debts['debt-ab-payable'])!;
+    const receivableAB = migratedState.debts.find((d) => d.id === idMap.debts['debt-ab-receivable'])!;
+    expect(payableAB.linkedDebtId).toBe(receivableAB.id);
+    expect(receivableAB.linkedDebtId).toBe(payableAB.id);
+
+    const clSb = migratedState.changeLogs!.find((c) => c.id === idMap.changeLogs['cl-sb-1'])!;
+    expect(clSb.entityId).toBe(sbMigrated.id);
+
+    // Balances preserved accurately (affectsAccountBalance === false transactions ignored)
+    const balancesAfter = calculateBalancesOracle(migratedState);
+    for (const [oldAccId, bal] of Object.entries(balancesBefore)) {
+      expect(balancesAfter[idMap.accounts[oldAccId]]).toBe(bal);
+    }
+
+    // Idempotent second pass
+    const res2 = migrateFinanceStateToUUID(migratedState, {
+      saveBackup: false,
+      nowISO: '2026-11-18T11:00:00.000Z',
+    });
+    expect(res2.stats.mappedIdsCount).toBe(0);
+    expect(res2.migratedState).toEqual(migratedState);
+
+    // Rejects broken FKs
+    const brokenSplitTx = JSON.parse(JSON.stringify(state)) as FinanceState;
+    brokenSplitTx.transactions.find((t) => t.id === 'tx-sb-pay')!.splitBillId = 'sb-ghost';
+    expect(() => migrateFinanceStateToUUID(brokenSplitTx, { saveBackup: false })).toThrow(
+      MigrationIntegrityError
+    );
+
+    const brokenLinkedDebt = JSON.parse(JSON.stringify(state)) as FinanceState;
+    brokenLinkedDebt.debts.find((d) => d.id === 'debt-ab-payable')!.linkedDebtId = 'debt-ghost';
+    expect(() => migrateFinanceStateToUUID(brokenLinkedDebt, { saveBackup: false })).toThrow(
+      MigrationIntegrityError
+    );
+
+    const brokenPeReceivable = JSON.parse(JSON.stringify(state)) as FinanceState;
+    brokenPeReceivable.projectExpenses.find((pe) => pe.id === 'pe-reim-legacy')!.linkedReceivableId =
+      'debt-ghost';
+    expect(() => migrateFinanceStateToUUID(brokenPeReceivable, { saveBackup: false })).toThrow(
+      MigrationIntegrityError
+    );
+  });
+
+  // Phase 2.6: PhysicalAssets & PhysicalItemLoans UUID migration, nested lossRecordId cross-ref, idempotency, and orphan rejection
+  it('memigrasikan physicalAssets, physicalItemLoans, lossRecordId bersarang, dan FK terkait secara konsisten serta menolak FK yatim Phase 2.6', () => {
+    const state = buildRichLegacyState();
+
+    state.transactions.push(
+      {
+        id: 'tx-asset-buy-dp',
+        type: 'expense',
+        amount: 500000,
+        categoryId: 'cat-debt',
+        accountId: 'acc-bank',
+        date: '2026-11-12',
+        description: 'Uang Muka Aset: Laptop Legacy',
+        tags: ['aset_fisik', 'dp_aset'],
+        assetId: 'asset-legacy-1',
+        debtId: 'debt-asset-1',
+        ledgerGroupId: 'grp-asset-1',
+        transactionNature: 'asset_purchase_down_payment',
+        affectsAccountBalance: true,
+        excludeFromExpenseStats: true,
+        isEssential: false,
+        isDiscretionary: false,
+        exceededBudget: false,
+        createdAt: '2026-11-12T08:00:00Z',
+      },
+      {
+        id: 'tx-asset-sell-cash',
+        type: 'income',
+        amount: 900000,
+        categoryId: 'cat-income-other',
+        accountId: 'acc-bank',
+        date: '2026-11-15',
+        description: 'Jual Aset: Kamera Legacy',
+        tags: ['aset_fisik', 'jual_aset'],
+        assetId: 'asset-legacy-sold',
+        transactionNature: 'asset_sale_proceeds',
+        affectsAccountBalance: true,
+        excludeFromIncomeStats: true,
+        isEssential: false,
+        isDiscretionary: false,
+        exceededBudget: false,
+        createdAt: '2026-11-15T09:00:00Z',
+      }
+    );
+
+    state.debts.push(
+      {
+        id: 'debt-asset-1',
+        direction: 'payable',
+        debtReceiptType: 'direct_expense',
+        accountId: 'acc-bank',
+        transactionId: 'tx-asset-buy-dp',
+        assetId: 'asset-legacy-1',
+        creditor: 'Toko Elektronik Legacy',
+        description: 'Cicilan Laptop Legacy',
+        initialAmount: 1500000,
+        remainingAmount: 1500000,
+        priority: 1,
+        status: 'active',
+        createdAt: '2026-11-12T08:00:00Z',
+      },
+      {
+        id: 'debt-asset-loss-comp',
+        direction: 'receivable',
+        receivableType: 'asset_loss_compensation',
+        assetId: 'asset-legacy-1',
+        physicalLoanId: 'loan-legacy-lent',
+        revenueAlreadyRecorded: false,
+        creditor: 'Peminjam Ceroboh',
+        description: 'Ganti rugi Laptop Legacy',
+        initialAmount: 1000000,
+        remainingAmount: 1000000,
+        priority: 1,
+        status: 'active',
+        createdAt: '2026-11-14T10:00:00Z',
+      }
+    );
+
+    state.physicalAssets = [
+      {
+        id: 'asset-legacy-1',
+        name: 'Laptop Legacy',
+        category: 'electronics',
+        acquisitionDate: '2026-11-12',
+        acquisitionValue: 2000000,
+        condition: 'good',
+        status: 'active',
+        paymentMethod: 'credit_with_down_payment',
+        accountId: 'acc-bank',
+        downPaymentAmount: 500000,
+        downPaymentTransactionId: 'tx-asset-buy-dp',
+        purchaseDebtId: 'debt-asset-1',
+        ledgerGroupId: 'grp-asset-1',
+        conditionHistory: [
+          {
+            id: 'cond-legacy-1',
+            date: '2026-11-12',
+            condition: 'good',
+            note: 'Kondisi awal',
+            createdAt: '2026-11-12T08:00:00Z',
+          },
+        ],
+        lossHistory: [
+          {
+            id: 'loss-rec-legacy-1',
+            lostDate: '2026-11-14',
+            reason: 'Sempat hilang',
+            lossAmount: 2000000,
+            loanId: 'loan-legacy-lent',
+            liableParty: 'Peminjam Ceroboh',
+            compensationAmount: 1000000,
+            compensationDebtId: 'debt-asset-loss-comp',
+            createdAt: '2026-11-14T10:00:00Z',
+          },
+        ],
+        recoveryHistory: [
+          {
+            id: 'rec-hist-legacy-1',
+            recoveredDate: '2026-11-15',
+            condition: 'good',
+            lossRecordId: 'loss-rec-legacy-1',
+            compensationCancelled: false,
+            createdAt: '2026-11-15T08:00:00Z',
+          },
+        ],
+        createdAt: '2026-11-12T08:00:00Z',
+      },
+      {
+        id: 'asset-legacy-sold',
+        name: 'Kamera Legacy',
+        category: 'equipment',
+        acquisitionDate: '2026-11-01',
+        acquisitionValue: 1000000,
+        condition: 'fair',
+        status: 'sold',
+        paymentMethod: 'cash',
+        accountId: 'acc-bank',
+        ledgerGroupId: 'grp-asset-sold-1',
+        conditionHistory: [],
+        lossHistory: [],
+        recoveryHistory: [],
+        disposal: {
+          disposalType: 'sold',
+          soldDate: '2026-11-15',
+          salePrice: 900000,
+          acquisitionValueAtDisposal: 1000000,
+          gainOrLoss: -100000,
+          proceedsMode: 'cash',
+          saleAccountId: 'acc-bank',
+          saleTransactionId: 'tx-asset-sell-cash',
+          createdAt: '2026-11-15T09:00:00Z',
+        },
+        createdAt: '2026-11-01T08:00:00Z',
+      },
+    ];
+
+    state.physicalItemLoans = [
+      {
+        id: 'loan-legacy-lent',
+        direction: 'lent',
+        assetId: 'asset-legacy-1',
+        itemName: 'Laptop Legacy',
+        category: 'electronics',
+        counterpartyName: 'Peminjam Ceroboh',
+        loanDate: '2026-11-13',
+        expectedReturnDate: '2026-11-20',
+        conditionGivenOrReceived: 'good',
+        status: 'lost',
+        lossRecordId: 'loss-rec-legacy-1',
+        compensationDebtId: 'debt-asset-loss-comp',
+        conditionHistory: [
+          {
+            id: 'lcond-legacy-1',
+            date: '2026-11-13',
+            condition: 'good',
+            note: 'Dipinjamkan',
+            createdAt: '2026-11-13T09:00:00Z',
+          },
+        ],
+        createdAt: '2026-11-13T09:00:00Z',
+      },
+      {
+        id: 'loan-legacy-borrowed',
+        direction: 'borrowed',
+        itemName: 'Proyektor Pinjaman',
+        category: 'electronics',
+        counterpartyName: 'Teman Kampus',
+        loanDate: '2026-11-14',
+        expectedReturnDate: '2026-11-19',
+        conditionGivenOrReceived: 'good',
+        status: 'active',
+        conditionHistory: [],
+        createdAt: '2026-11-14T09:00:00Z',
+      },
+    ];
+
+    state.changeLogs = [
+      ...(state.changeLogs ?? []),
+      {
+        id: 'cl-asset-1',
+        timestamp: '2026-11-12T08:00:00Z',
+        entityType: 'physical_asset',
+        entityId: 'asset-legacy-1',
+        action: 'create',
+        summary: 'Catat aset legacy',
+      },
+      {
+        id: 'cl-loan-1',
+        timestamp: '2026-11-13T09:00:00Z',
+        entityType: 'physical_loan',
+        entityId: 'loan-legacy-lent',
+        action: 'create',
+        summary: 'Catat peminjaman legacy',
+      },
+    ];
+
+    const balancesBefore = calculateBalancesOracle(state);
+    const res1 = migrateFinanceStateToUUID(state, {
+      saveBackup: false,
+      nowISO: '2026-11-18T12:00:00.000Z',
+    });
+
+    const { migratedState, idMap } = res1;
+    const migratedAsset1 = migratedState.physicalAssets!.find(
+      (a) => a.id === idMap.physicalAssets['asset-legacy-1']
+    )!;
+    const migratedAssetSold = migratedState.physicalAssets!.find(
+      (a) => a.id === idMap.physicalAssets['asset-legacy-sold']
+    )!;
+    const migratedLoanLent = migratedState.physicalItemLoans!.find(
+      (l) => l.id === idMap.physicalItemLoans['loan-legacy-lent']
+    )!;
+
+    expect(isValidUUID(migratedAsset1.id)).toBe(true);
+    expect(migratedAsset1.accountId).toBe(idMap.accounts['acc-bank']);
+    expect(migratedAsset1.downPaymentTransactionId).toBe(idMap.transactions['tx-asset-buy-dp']);
+    expect(migratedAsset1.purchaseDebtId).toBe(idMap.debts['debt-asset-1']);
+    expect(isValidUUID(migratedAsset1.ledgerGroupId!)).toBe(true);
+    expect(isValidUUID(migratedAsset1.conditionHistory[0].id)).toBe(true);
+    expect(isValidUUID(migratedAsset1.lossHistory[0].id)).toBe(true);
+    expect(migratedAsset1.lossHistory[0].loanId).toBe(migratedLoanLent.id);
+    expect(migratedAsset1.lossHistory[0].compensationDebtId).toBe(
+      idMap.debts['debt-asset-loss-comp']
+    );
+    expect(migratedAsset1.recoveryHistory[0].lossRecordId).toBe(migratedAsset1.lossHistory[0].id);
+
+    expect(migratedAssetSold.disposal?.saleAccountId).toBe(idMap.accounts['acc-bank']);
+    expect(migratedAssetSold.disposal?.saleTransactionId).toBe(
+      idMap.transactions['tx-asset-sell-cash']
+    );
+
+    expect(migratedLoanLent.assetId).toBe(migratedAsset1.id);
+    expect(migratedLoanLent.lossRecordId).toBe(migratedAsset1.lossHistory[0].id);
+    expect(migratedLoanLent.compensationDebtId).toBe(idMap.debts['debt-asset-loss-comp']);
+    expect(isValidUUID(migratedLoanLent.conditionHistory[0].id)).toBe(true);
+
+    const migAssetTx = migratedState.transactions.find(
+      (t) => t.id === idMap.transactions['tx-asset-buy-dp']
+    )!;
+    expect(migAssetTx.assetId).toBe(migratedAsset1.id);
+
+    const migCompDebt = migratedState.debts.find(
+      (d) => d.id === idMap.debts['debt-asset-loss-comp']
+    )!;
+    expect(migCompDebt.assetId).toBe(migratedAsset1.id);
+    expect(migCompDebt.physicalLoanId).toBe(migratedLoanLent.id);
+
+    const clAsset = migratedState.changeLogs!.find((c) => c.id === idMap.changeLogs['cl-asset-1'])!;
+    const clLoan = migratedState.changeLogs!.find((c) => c.id === idMap.changeLogs['cl-loan-1'])!;
+    expect(clAsset.entityId).toBe(migratedAsset1.id);
+    expect(clLoan.entityId).toBe(migratedLoanLent.id);
+
+    const balancesAfter = calculateBalancesOracle(migratedState);
+    for (const [oldAccId, bal] of Object.entries(balancesBefore)) {
+      expect(balancesAfter[idMap.accounts[oldAccId]]).toBe(bal);
+    }
+
+    // Idempotent second pass
+    const res2 = migrateFinanceStateToUUID(migratedState, {
+      saveBackup: false,
+      nowISO: '2026-11-18T13:00:00.000Z',
+    });
+    expect(res2.stats.mappedIdsCount).toBe(0);
+    expect(res2.migratedState).toEqual(migratedState);
+
+    // Reject orphan FK on physicalAssets.purchaseDebtId and physicalItemLoans.assetId
+    const brokenAssetDebt = JSON.parse(JSON.stringify(state)) as FinanceState;
+    brokenAssetDebt.physicalAssets![0].purchaseDebtId = 'debt-ghost';
+    let caughtAssetDebt: unknown = null;
+    try {
+      migrateFinanceStateToUUID(brokenAssetDebt, { saveBackup: false });
+    } catch (err) {
+      caughtAssetDebt = err;
+    }
+    expect(caughtAssetDebt).toBeInstanceOf(MigrationIntegrityError);
+    expect((caughtAssetDebt as MigrationIntegrityError).code).toBe('ORPHAN_FOREIGN_KEY');
+
+    const brokenLoanAsset = JSON.parse(JSON.stringify(state)) as FinanceState;
+    brokenLoanAsset.physicalItemLoans![0].assetId = 'asset-ghost';
+    let caughtLoanAsset: unknown = null;
+    try {
+      migrateFinanceStateToUUID(brokenLoanAsset, { saveBackup: false });
+    } catch (err) {
+      caughtLoanAsset = err;
+    }
+    expect(caughtLoanAsset).toBeInstanceOf(MigrationIntegrityError);
+    expect((caughtLoanAsset as MigrationIntegrityError).code).toBe('ORPHAN_FOREIGN_KEY');
+  });
 });
+
+
+

@@ -9,6 +9,8 @@ import {
 import {
   addTransactionAction,
   addTransferAction,
+  createFriendAdvanceAction,
+  createSplitBillAction,
   findDefaultActiveDebt,
   getTransactionLinkInfo,
   payObligationAction,
@@ -53,6 +55,14 @@ export const QuickTransactionModal: React.FC<QuickTransactionModalProps> = ({
   );
 
   const [tab, setTab] = useState<'expense' | 'income' | 'transfer'>('expense');
+  const [expenseMode, setExpenseMode] = useState<'standard' | 'split_bill' | 'friend_advance'>('standard');
+  const [splitMode, setSplitMode] = useState<'equal' | 'manual'>('equal');
+  const [userShareInput, setUserShareInput] = useState<string>('');
+  const [splitParticipants, setSplitParticipants] = useState<
+    Array<{ id: string; name: string; shareAmount: string }>
+  >([{ id: 'p1', name: '', shareAmount: '' }]);
+  const [friendName, setFriendName] = useState<string>('');
+  const [friendDueDate, setFriendDueDate] = useState<string>('');
   const [amount, setAmount] = useState<string>('');
   const [categoryId, setCategoryId] = useState<string>('cat-cig');
   const [accountId, setAccountId] = useState<string>(activeAccounts[0]?.id ?? 'acc-cash');
@@ -74,6 +84,12 @@ export const QuickTransactionModal: React.FC<QuickTransactionModalProps> = ({
     setOverrideReason('');
     setOverrideConfirmed(false);
     setShowGate(false);
+    setExpenseMode('standard');
+    setSplitMode('equal');
+    setUserShareInput('');
+    setSplitParticipants([{ id: 'p1', name: '', shareAmount: '' }]);
+    setFriendName('');
+    setFriendDueDate('');
 
     const defaultAcc = activeAccounts[0]?.id ?? 'acc-cash';
     const secondAcc = activeAccounts.find((a) => a.id !== defaultAcc)?.id ?? defaultAcc;
@@ -149,23 +165,55 @@ export const QuickTransactionModal: React.FC<QuickTransactionModalProps> = ({
 
   const numericAmount = Number(amount) || 0;
 
+  const splitComputation = useMemo(() => {
+    const total = Math.round(numericAmount);
+    const count = Math.max(1, splitParticipants.length);
+    if (splitMode === 'equal') {
+      const headCount = 1 + count;
+      const base = total > 0 ? Math.floor(total / headCount) : 0;
+      const remainder = total > 0 ? total - base * headCount : 0;
+      return {
+        userShare: base + remainder,
+        participantShares: splitParticipants.map(() => base),
+        isMatched: total > 0,
+      };
+    }
+    const userShare = Math.max(0, Math.round(Number(userShareInput) || 0));
+    const participantShares = splitParticipants.map((p) =>
+      Math.max(0, Math.round(Number(p.shareAmount) || 0))
+    );
+    const sum = userShare + participantShares.reduce((s, v) => s + v, 0);
+    return {
+      userShare,
+      participantShares,
+      isMatched: total > 0 && sum === total,
+    };
+  }, [numericAmount, splitMode, userShareInput, splitParticipants]);
+
+  const effectiveExpenseForStats = useMemo(() => {
+    if (tab !== 'expense' || editingTx) return 0;
+    if (expenseMode === 'friend_advance') return 0;
+    if (expenseMode === 'split_bill') return splitComputation.userShare;
+    return numericAmount;
+  }, [tab, editingTx, expenseMode, splitComputation.userShare, numericAmount]);
+
   const disciplineCheck = useMemo(() => {
-    if (tab !== 'expense' || numericAmount <= 0 || editingTx) return null;
+    if (tab !== 'expense' || effectiveExpenseForStats <= 0 || editingTx) return null;
     return evaluateDisciplineForExpense(
       state,
-      { amount: numericAmount, categoryId, accountId, date },
+      { amount: effectiveExpenseForStats, categoryId, accountId, date },
       snapshot
     );
-  }, [tab, numericAmount, categoryId, accountId, date, state, snapshot, editingTx]);
+  }, [tab, effectiveExpenseForStats, categoryId, accountId, date, state, snapshot, editingTx]);
 
   const liveSimulation = useMemo(() => {
-    if (tab !== 'expense' || numericAmount <= 0 || editingTx) return null;
+    if (tab !== 'expense' || effectiveExpenseForStats <= 0 || editingTx) return null;
     return simulateExpenseImpact(
       state,
-      { amount: numericAmount, categoryId, accountId, date },
+      { amount: effectiveExpenseForStats, categoryId, accountId, date },
       snapshot
     );
-  }, [tab, numericAmount, categoryId, accountId, date, state, snapshot, editingTx]);
+  }, [tab, effectiveExpenseForStats, categoryId, accountId, date, state, snapshot, editingTx]);
 
   const allocationPreview = useMemo(() => {
     if (tab !== 'income' || numericAmount <= 0) return [];
@@ -298,6 +346,59 @@ export const QuickTransactionModal: React.FC<QuickTransactionModalProps> = ({
         }
       }
 
+      if (tab === 'expense' && preset !== 'debt' && preset !== 'kkn' && expenseMode === 'friend_advance') {
+        if (!friendName.trim()) {
+          setError('Nama teman yang ditalangi wajib diisi.');
+          return;
+        }
+        const next = createFriendAdvanceAction(state, {
+          friendName: friendName.trim(),
+          amount: numericAmount,
+          accountId,
+          date,
+          dueDate: friendDueDate || undefined,
+          description: description.trim() || undefined,
+        });
+        onCommit(next);
+        onClose();
+        return;
+      }
+
+      if (tab === 'expense' && preset !== 'debt' && preset !== 'kkn' && expenseMode === 'split_bill') {
+        if (disciplineCheck?.requiresConfirmation && !showGate) {
+          setShowGate(true);
+          return;
+        }
+        if (disciplineCheck?.requiresConfirmation) {
+          if (overrideReason.trim().length < 5) {
+            setError('Tuliskan alasan jujur minimal 5 karakter sebelum melanjutkan.');
+            return;
+          }
+          if (!overrideConfirmed) {
+            setError('Centang konfirmasi kesadaran dampak finansial terlebih dahulu.');
+            return;
+          }
+        }
+        const { state: next } = createSplitBillAction(state, {
+          title: description.trim() || 'Patungan Split Bill',
+          totalAmount: numericAmount,
+          categoryId,
+          accountId,
+          date,
+          splitMode,
+          userShareAmount: splitMode === 'manual' ? Math.round(Number(userShareInput) || 0) : undefined,
+          participants: splitParticipants.map((p) => ({
+            name: p.name,
+            shareAmount: splitMode === 'manual' ? Math.round(Number(p.shareAmount) || 0) : undefined,
+          })),
+          notes,
+          overrideReason: showGate ? overrideReason : undefined,
+        });
+        onCommit(next);
+        onClose();
+        return;
+      }
+
       if (tab === 'expense' && disciplineCheck?.requiresConfirmation && !showGate) {
         setShowGate(true);
         return;
@@ -367,6 +468,7 @@ export const QuickTransactionModal: React.FC<QuickTransactionModalProps> = ({
                     const nextTab = t.id as 'expense' | 'income' | 'transfer';
                     setTab(nextTab);
                     setShowGate(false);
+                    setExpenseMode('standard');
                     if (nextTab === 'expense') setCategoryId('cat-food');
                     if (nextTab === 'income') setCategoryId('cat-income-allowance');
                   }}
@@ -377,6 +479,33 @@ export const QuickTransactionModal: React.FC<QuickTransactionModalProps> = ({
                   }`}
                 >
                   {t.label}
+                </button>
+              ))}
+            </div>
+          )}
+
+          {!editingTx && tab === 'expense' && preset !== 'debt' && preset !== 'kkn' && (
+            <div className="grid grid-cols-3 gap-1 rounded-xl border border-slate-200 bg-slate-50 p-1">
+              {[
+                { id: 'standard', label: 'Pribadi' },
+                { id: 'split_bill', label: 'Split Bill' },
+                { id: 'friend_advance', label: 'Talangan Teman' },
+              ].map((m) => (
+                <button
+                  key={m.id}
+                  type="button"
+                  onClick={() => {
+                    setExpenseMode(m.id as 'standard' | 'split_bill' | 'friend_advance');
+                    setShowGate(false);
+                    setError(null);
+                  }}
+                  className={`py-1.5 px-2 text-[11px] font-semibold rounded-lg transition-colors whitespace-nowrap ${
+                    expenseMode === m.id
+                      ? 'bg-[#0976A6] text-white shadow-xs'
+                      : 'text-slate-600 hover:text-slate-900'
+                  }`}
+                >
+                  {m.label}
                 </button>
               ))}
             </div>
@@ -394,7 +523,11 @@ export const QuickTransactionModal: React.FC<QuickTransactionModalProps> = ({
 
           <div>
             <label className="block text-xs font-semibold text-slate-700 mb-1.5">
-              Nominal (Rupiah)
+              {tab === 'expense' && expenseMode === 'split_bill'
+                ? 'Total Tagihan Split Bill (Dibayar Penuh)'
+                : tab === 'expense' && expenseMode === 'friend_advance'
+                ? 'Nominal Talangan Teman (Rupiah)'
+                : 'Nominal (Rupiah)'}
             </label>
             <div className="relative">
               <span className="absolute left-3.5 top-1/2 -translate-y-1/2 text-sm font-bold text-slate-500">
@@ -435,27 +568,29 @@ export const QuickTransactionModal: React.FC<QuickTransactionModalProps> = ({
 
           {tab !== 'transfer' ? (
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-              <div>
-                <label className="block text-xs font-semibold text-slate-700 mb-1.5">
-                  Kategori
-                </label>
-                <select
-                  value={categoryId}
-                  disabled={isEditingLocked}
-                  onChange={(e) => {
-                    setCategoryId(e.target.value);
-                    setShowGate(false);
-                  }}
-                  className="w-full rounded-xl border border-slate-300 bg-white px-3 py-2.5 text-sm focus:border-[#0C8FC5] focus:outline-none disabled:bg-slate-100 disabled:text-slate-500"
-                >
-                  {(tab === 'expense' ? expenseCategories : incomeCategories).map((c) => (
-                    <option key={c.id} value={c.id}>
-                      {c.name}
-                    </option>
-                  ))}
-                </select>
-              </div>
-              <div>
+              {!(tab === 'expense' && !editingTx && expenseMode === 'friend_advance') && (
+                <div>
+                  <label className="block text-xs font-semibold text-slate-700 mb-1.5">
+                    Kategori
+                  </label>
+                  <select
+                    value={categoryId}
+                    disabled={isEditingLocked}
+                    onChange={(e) => {
+                      setCategoryId(e.target.value);
+                      setShowGate(false);
+                    }}
+                    className="w-full rounded-xl border border-slate-300 bg-white px-3 py-2.5 text-sm focus:border-[#0C8FC5] focus:outline-none disabled:bg-slate-100 disabled:text-slate-500"
+                  >
+                    {(tab === 'expense' ? expenseCategories : incomeCategories).map((c) => (
+                      <option key={c.id} value={c.id}>
+                        {c.name}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              )}
+              <div className={tab === 'expense' && !editingTx && expenseMode === 'friend_advance' ? 'sm:col-span-2' : ''}>
                 <label className="block text-xs font-semibold text-slate-700 mb-1.5">
                   {isNonCashEditing
                     ? 'Sumber Pencatatan'
@@ -583,6 +718,167 @@ export const QuickTransactionModal: React.FC<QuickTransactionModalProps> = ({
               className="w-full rounded-xl border border-slate-300 px-3 py-2.5 text-sm focus:border-[#0C8FC5] focus:outline-none"
             />
           </div>
+
+          {!editingTx && tab === 'expense' && expenseMode === 'friend_advance' && (
+            <div className="rounded-xl border border-[#B9E2F5] bg-[#E8F6FC]/60 p-3.5 space-y-2.5">
+              <p className="text-xs font-bold text-slate-900">Detail Talangan Kebutuhan Teman</p>
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
+                <div>
+                  <label className="block text-[11px] font-semibold text-slate-700 mb-1">
+                    Nama Teman <span className="text-red-600">*</span>
+                  </label>
+                  <input
+                    type="text"
+                    required
+                    value={friendName}
+                    onChange={(e) => setFriendName(e.target.value)}
+                    placeholder="Contoh: Bima"
+                    className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-xs"
+                  />
+                </div>
+                <div>
+                  <label className="block text-[11px] font-semibold text-slate-700 mb-1">
+                    Jatuh Tempo (Opsional)
+                  </label>
+                  <input
+                    type="date"
+                    value={friendDueDate}
+                    onChange={(e) => setFriendDueDate(e.target.value)}
+                    className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-xs"
+                  />
+                </div>
+              </div>
+              <p className="text-[11px] text-[#075D83]">
+                Saldo akun sumber langsung berkurang dan tercatat sebagai <strong>Piutang Talangan Teman</strong> — tidak masuk statistik pengeluaran konsumsi atau membatalkan No-Spend Day.
+              </p>
+            </div>
+          )}
+
+          {!editingTx && tab === 'expense' && expenseMode === 'split_bill' && (
+            <div className="rounded-xl border border-[#B9E2F5] bg-[#E8F6FC]/60 p-3.5 space-y-3">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <p className="text-xs font-bold text-slate-900">Pembagian Split Bill</p>
+                <div className="inline-flex rounded-lg bg-white border border-slate-200 p-0.5 text-[11px]">
+                  <button
+                    type="button"
+                    onClick={() => setSplitMode('equal')}
+                    className={`px-2.5 py-1 rounded-md font-semibold ${
+                      splitMode === 'equal' ? 'bg-[#0976A6] text-white' : 'text-slate-600'
+                    }`}
+                  >
+                    Bagi Rata
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setSplitMode('manual')}
+                    className={`px-2.5 py-1 rounded-md font-semibold ${
+                      splitMode === 'manual' ? 'bg-[#0976A6] text-white' : 'text-slate-600'
+                    }`}
+                  >
+                    Nominal Manual
+                  </button>
+                </div>
+              </div>
+
+              <div className="flex items-center justify-between rounded-lg bg-white border border-slate-200 px-3 py-2 text-xs">
+                <span className="font-semibold text-slate-700">Porsi Pribadi Anda:</span>
+                {splitMode === 'equal' ? (
+                  <span className="font-mono-num font-bold text-slate-900">
+                    {formatIDR(splitComputation.userShare)}
+                  </span>
+                ) : (
+                  <input
+                    type="number"
+                    min={0}
+                    value={userShareInput}
+                    onChange={(e) => setUserShareInput(e.target.value)}
+                    placeholder="Nominal porsi Anda"
+                    className="w-36 rounded-lg border border-slate-300 px-2.5 py-1 text-xs font-mono-num text-right"
+                  />
+                )}
+              </div>
+
+              <div className="space-y-2">
+                <div className="flex items-center justify-between">
+                  <span className="text-[11px] font-semibold text-slate-700">
+                    Peserta Lain (Menjadi Piutang):
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() =>
+                      setSplitParticipants((prev) => [
+                        ...prev,
+                        { id: `p${Date.now()}`, name: '', shareAmount: '' },
+                      ])
+                    }
+                    className="text-[11px] font-semibold text-[#0976A6] hover:underline"
+                  >
+                    + Tambah Peserta
+                  </button>
+                </div>
+                {splitParticipants.map((part, idx) => (
+                  <div key={part.id} className="flex items-center gap-2">
+                    <input
+                      type="text"
+                      required
+                      value={part.name}
+                      onChange={(e) => {
+                        const val = e.target.value;
+                        setSplitParticipants((prev) =>
+                          prev.map((item, i) => (i === idx ? { ...item, name: val } : item))
+                        );
+                      }}
+                      placeholder={`Nama teman ${idx + 1}`}
+                      className="flex-1 rounded-lg border border-slate-300 bg-white px-2.5 py-1.5 text-xs"
+                    />
+                    {splitMode === 'equal' ? (
+                      <span className="w-28 text-right font-mono-num text-xs font-semibold text-slate-700">
+                        {formatIDR(splitComputation.participantShares[idx] ?? 0)}
+                      </span>
+                    ) : (
+                      <input
+                        type="number"
+                        min={1}
+                        required
+                        value={part.shareAmount}
+                        onChange={(e) => {
+                          const val = e.target.value;
+                          setSplitParticipants((prev) =>
+                            prev.map((item, i) => (i === idx ? { ...item, shareAmount: val } : item))
+                          );
+                        }}
+                        placeholder="Porsi (Rp)"
+                        className="w-28 rounded-lg border border-slate-300 bg-white px-2.5 py-1.5 text-xs font-mono-num"
+                      />
+                    )}
+                    {splitParticipants.length > 1 && (
+                      <button
+                        type="button"
+                        onClick={() =>
+                          setSplitParticipants((prev) => prev.filter((_, i) => i !== idx))
+                        }
+                        className="rounded-lg border border-slate-200 bg-white px-2 py-1 text-[11px] text-red-600 hover:bg-red-50"
+                      >
+                        Hapus
+                      </button>
+                    )}
+                  </div>
+                ))}
+              </div>
+
+              {numericAmount > 0 && (
+                <p
+                  className={`text-[11px] font-semibold ${
+                    splitComputation.isMatched ? 'text-emerald-700' : 'text-red-700'
+                  }`}
+                >
+                  {splitComputation.isMatched
+                    ? `Total pembagian cocok (${formatIDR(numericAmount)}). Hanya porsi Anda (${formatIDR(splitComputation.userShare)}) yang masuk pengeluaran pribadi.`
+                    : 'Jumlah porsi Anda + semua peserta harus sama persis dengan total tagihan.'}
+                </p>
+              )}
+            </div>
+          )}
 
           {/* Transfer Info */}
           {tab === 'transfer' && (

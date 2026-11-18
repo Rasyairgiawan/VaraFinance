@@ -23,7 +23,16 @@ export type ObligationKind = 'obligation' | 'scheduled_expense';
 
 export type DebtDirection = 'payable' | 'receivable';
 
-export type ReceivableKind = 'personal_loan' | 'project_sales';
+export type ReceivableKind =
+  | 'personal_loan'
+  | 'project_sales'
+  | 'split_bill'
+  | 'friend_advance'
+  | 'project_reimbursement'
+  | 'asset_sale'
+  | 'asset_loss_compensation';
+
+export type ProjectExpenseKind = 'project_cost' | 'pure_advance' | 'pass_through';
 
 export type DebtReceiptKind = 'cash_received' | 'direct_expense';
 
@@ -34,6 +43,22 @@ export type TransactionNature =
   | 'debt_direct_expense'
   | 'debt_repayment'
   | 'receivable_collection'
+  | 'receivable_write_off'
+  | 'custodial_receipt'
+  | 'custodial_return'
+  | 'project_advance_receipt'
+  | 'project_advance_recognition'
+  | 'project_advance_refund'
+  | 'split_bill_payment'
+  | 'split_bill_personal_share'
+  | 'friend_advance'
+  | 'project_reimbursement_advance'
+  | 'reimbursement_collection'
+  | 'linked_borrow_lend'
+  | 'asset_purchase_cash'
+  | 'asset_purchase_credit'
+  | 'asset_purchase_down_payment'
+  | 'asset_sale_proceeds'
   | 'reconciliation';
 
 export interface AllocationRules {
@@ -182,6 +207,13 @@ export interface Transaction {
   incomeSource?: IncomeSourceType;
   projectId?: string;
   debtId?: string;
+  splitBillId?: string;
+  custodialFundId?: string;
+  projectAdvanceId?: string;
+  assetId?: string;
+  physicalLoanId?: string;
+  ledgerGroupId?: string;
+  parentTransactionId?: string;
   transactionNature?: TransactionNature;
   affectsAccountBalance?: boolean;
   excludeFromExpenseStats?: boolean;
@@ -199,6 +231,17 @@ export interface Transaction {
   revision?: number;
 }
 
+export interface FundAllocation {
+  accountId: string;
+  amount: number;
+}
+
+export interface TransferAllocationMovement {
+  fundType: 'custodial' | 'project_advance';
+  fundId: string;
+  amount: number;
+}
+
 export interface AccountTransfer {
   id: string;
   fromAccountId: string;
@@ -206,6 +249,8 @@ export interface AccountTransfer {
   amount: number;
   date: string;
   notes?: string;
+  idempotencyKey?: string;
+  restrictedMovements?: TransferAllocationMovement[];
   createdAt: string;
   updatedAt?: string;
   deletedAt?: string;
@@ -252,6 +297,8 @@ export interface ProjectPayment {
 export interface ProjectExpense {
   id: string;
   projectId: string;
+  expenseKind?: ProjectExpenseKind; // 'project_cost' (default) | 'pure_advance' | 'pass_through'
+  linkedReceivableId?: string;
   description: string;
   amount: number;
   date: string;
@@ -266,6 +313,20 @@ export interface ProjectExpense {
   revision?: number;
 }
 
+export type DebtStatus = 'active' | 'paid' | 'written_off';
+
+export interface DebtWriteOffEntry {
+  id: string;
+  action: 'write_off' | 'recover';
+  amount: number;
+  date: string;
+  revenueAlreadyRecorded: boolean;
+  transactionId?: string;
+  reason?: string;
+  idempotencyKey?: string;
+  createdAt: string;
+}
+
 export interface Debt {
   id: string;
   systemKey?: string;
@@ -277,6 +338,12 @@ export interface Debt {
   transactionId?: string;
   projectId?: string;
   projectPaymentId?: string;
+  projectExpenseId?: string;
+  splitBillId?: string;
+  linkedDebtId?: string;
+  assetId?: string;
+  physicalLoanId?: string;
+  reimbursementKind?: 'pure_advance' | 'pass_through';
   revenueAlreadyRecorded?: boolean;
   date?: string;
   idempotencyKey?: string;
@@ -286,7 +353,140 @@ export interface Debt {
   remainingAmount: number;
   dueDate?: string;
   priority: number;
-  status: 'active' | 'paid';
+  status: DebtStatus;
+  writtenOffAmount?: number;
+  writtenOffAt?: string;
+  writeOffReason?: string;
+  writeOffHistory?: DebtWriteOffEntry[];
+  isVoided?: boolean;
+  voidedAt?: string;
+  voidReason?: string;
+  createdAt: string;
+  updatedAt?: string;
+  deletedAt?: string;
+  revision?: number;
+}
+
+export interface SplitBillParticipant {
+  id: string;
+  name: string;
+  shareAmount: number;
+  debtId: string;
+}
+
+export interface SplitBill {
+  id: string;
+  title: string;
+  date: string;
+  categoryId: string;
+  accountId: string;
+  totalAmount: number;
+  userShareAmount: number;
+  splitMode: 'equal' | 'manual';
+  participants: SplitBillParticipant[];
+  paymentTransactionId: string;
+  personalShareTransactionId?: string;
+  ledgerGroupId: string;
+  notes?: string;
+  idempotencyKey?: string;
+  isVoided?: boolean;
+  voidedAt?: string;
+  voidReason?: string;
+  createdAt: string;
+  updatedAt?: string;
+  deletedAt?: string;
+  revision?: number;
+}
+
+export type CustodialFundStatus = 'active' | 'returned' | 'voided';
+
+export interface CustodialReturnEntry {
+  id: string;
+  amount: number;
+  date: string;
+  accountId: string;
+  transactionId: string;
+  notes?: string;
+  idempotencyKey?: string;
+  isVoided?: boolean;
+  voidedAt?: string;
+  voidReason?: string;
+  createdAt: string;
+}
+
+export interface CustodialFund {
+  id: string;
+  counterparty: string;
+  description: string;
+  initialAmount: number;
+  remainingAmount: number;
+  receivedDate: string;
+  holdingAccountId: string;
+  fundAllocations: FundAllocation[];
+  receiptTransactionId: string;
+  ledgerGroupId: string;
+  status: CustodialFundStatus;
+  returns: CustodialReturnEntry[];
+  notes?: string;
+  idempotencyKey?: string;
+  isVoided?: boolean;
+  voidedAt?: string;
+  voidReason?: string;
+  createdAt: string;
+  updatedAt?: string;
+  deletedAt?: string;
+  revision?: number;
+}
+
+export type ProjectAdvanceStatus = 'active' | 'settled' | 'voided';
+
+export interface ProjectAdvanceRecognition {
+  id: string;
+  amount: number;
+  date: string;
+  transactionId: string;
+  allocationDeltas?: FundAllocation[];
+  notes?: string;
+  idempotencyKey?: string;
+  isVoided?: boolean;
+  voidedAt?: string;
+  voidReason?: string;
+  createdAt: string;
+}
+
+export interface ProjectAdvanceRefund {
+  id: string;
+  amount: number;
+  date: string;
+  accountId: string;
+  transactionId: string;
+  notes?: string;
+  idempotencyKey?: string;
+  isVoided?: boolean;
+  voidedAt?: string;
+  voidReason?: string;
+  createdAt: string;
+}
+
+export interface ProjectAdvance {
+  id: string;
+  projectId: string;
+  clientName: string;
+  description: string;
+  initialAmount: number;
+  recognizedAmount: number;
+  refundedAmount: number;
+  remainingAmount: number;
+  receivedDate: string;
+  holdingAccountId: string;
+  fundAllocations: FundAllocation[];
+  receiptTransactionId: string;
+  ledgerGroupId: string;
+  status: ProjectAdvanceStatus;
+  recognitions: ProjectAdvanceRecognition[];
+  refunds: ProjectAdvanceRefund[];
+  notes?: string;
+  idempotencyKey?: string;
   isVoided?: boolean;
   voidedAt?: string;
   voidReason?: string;
@@ -331,6 +531,7 @@ export interface RecurringObligation {
   reminderEnabled: boolean;
   reminderDaysBefore: number;
   reallocatedToGoalId?: string;
+  linkedDebtId?: string;
   isActive: boolean;
   isArchived?: boolean;
   createdAt: string;
@@ -406,6 +607,133 @@ export interface NoSpendConfirmation {
   revision?: number;
 }
 
+export type AssetCategory =
+  | 'electronics'
+  | 'vehicle'
+  | 'gadget'
+  | 'equipment'
+  | 'furniture'
+  | 'other';
+
+export type AssetCondition = 'excellent' | 'good' | 'fair' | 'damaged';
+
+export type AssetStatus = 'active' | 'lent' | 'sold' | 'lost' | 'voided';
+
+export type AssetPaymentMethod = 'cash' | 'credit' | 'credit_with_down_payment';
+
+export interface AssetConditionLogEntry {
+  id: string;
+  date: string;
+  previousCondition?: AssetCondition;
+  condition: AssetCondition;
+  note?: string;
+  createdAt: string;
+}
+
+export interface AssetDisposalRecord {
+  disposalType: 'sold';
+  soldDate: string;
+  salePrice: number;
+  acquisitionValueAtDisposal: number;
+  gainOrLoss: number;
+  proceedsMode: 'cash' | 'receivable';
+  buyerName?: string;
+  saleAccountId?: string;
+  saleTransactionId?: string;
+  receivableId?: string;
+  notes?: string;
+  createdAt: string;
+}
+
+export interface AssetLossRecord {
+  id: string;
+  lostDate: string;
+  reason: string;
+  lossAmount: number;
+  loanId?: string;
+  liableParty?: string;
+  compensationAmount?: number;
+  compensationDebtId?: string;
+  compensationCancelled?: boolean;
+  compensationCancelledAt?: string;
+  compensationCancelReason?: string;
+  notes?: string;
+  createdAt: string;
+}
+
+export interface AssetRecoveryRecord {
+  id: string;
+  recoveredDate: string;
+  condition: AssetCondition;
+  lossRecordId?: string;
+  compensationCancelled?: boolean;
+  notes?: string;
+  createdAt: string;
+}
+
+export interface PhysicalAsset {
+  id: string;
+  name: string;
+  category: AssetCategory;
+  acquisitionDate: string;
+  acquisitionValue: number;
+  condition: AssetCondition;
+  status: AssetStatus;
+  paymentMethod: AssetPaymentMethod;
+  accountId?: string;
+  downPaymentAmount?: number;
+  purchaseTransactionId?: string;
+  downPaymentTransactionId?: string;
+  purchaseDebtId?: string;
+  ledgerGroupId: string;
+  brandOrModel?: string;
+  serialNumber?: string;
+  notes?: string;
+  conditionHistory: AssetConditionLogEntry[];
+  disposal?: AssetDisposalRecord;
+  lossHistory: AssetLossRecord[];
+  recoveryHistory: AssetRecoveryRecord[];
+  idempotencyKey?: string;
+  isVoided?: boolean;
+  voidedAt?: string;
+  voidReason?: string;
+  createdAt: string;
+  updatedAt?: string;
+  deletedAt?: string;
+  revision?: number;
+}
+
+export type PhysicalLoanDirection = 'borrowed' | 'lent';
+
+export type PhysicalLoanStatus = 'active' | 'returned' | 'lost' | 'voided';
+
+export interface PhysicalItemLoan {
+  id: string;
+  direction: PhysicalLoanDirection;
+  assetId?: string;
+  itemName: string;
+  category?: AssetCategory;
+  counterpartyName: string;
+  loanDate: string;
+  expectedReturnDate?: string;
+  returnedDate?: string;
+  conditionGivenOrReceived: AssetCondition;
+  conditionReturned?: AssetCondition;
+  status: PhysicalLoanStatus;
+  conditionHistory: AssetConditionLogEntry[];
+  lossRecordId?: string;
+  compensationDebtId?: string;
+  notes?: string;
+  idempotencyKey?: string;
+  isVoided?: boolean;
+  voidedAt?: string;
+  voidReason?: string;
+  createdAt: string;
+  updatedAt?: string;
+  deletedAt?: string;
+  revision?: number;
+}
+
 export type ChangeEntityType =
   | 'settings'
   | 'budget'
@@ -417,7 +745,12 @@ export type ChangeEntityType =
   | 'category'
   | 'transaction'
   | 'debt'
-  | 'receivable';
+  | 'receivable'
+  | 'custodial'
+  | 'project_advance'
+  | 'split_bill'
+  | 'physical_asset'
+  | 'physical_loan';
 
 export interface ChangeLogEntry {
   id: string;
@@ -449,6 +782,11 @@ export interface FinanceState {
   projectExpenses: ProjectExpense[];
   debts: Debt[];
   debtPayments: DebtPayment[];
+  splitBills?: SplitBill[];
+  custodialFunds?: CustodialFund[];
+  projectAdvances?: ProjectAdvance[];
+  physicalAssets?: PhysicalAsset[];
+  physicalItemLoans?: PhysicalItemLoan[];
   obligations: RecurringObligation[];
   obligationLogs: ObligationLog[];
   goals: SavingsGoal[];
