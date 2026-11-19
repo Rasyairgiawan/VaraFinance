@@ -157,9 +157,9 @@ export const AuthScreen: React.FC<AuthScreenProps> = ({
     setLoading(true);
     try {
       if (isSupabaseConfigured) {
-        const sentTo = await requestCloudPasswordReset(forgotUsername);
+        await requestCloudPasswordReset(forgotUsername);
         setInfoMsg(
-          `Tautan reset password telah dikirim ke ${sentTo}. Ikuti instruksi pada email Anda lalu login kembali.`
+          'Jika akun terdaftar, tautan reset password telah dikirim ke email pemulihan akun tersebut. Ikuti instruksi pada email Anda lalu login kembali.'
         );
       } else {
         const { newRecoveryKey } = await recoverLocalPasswordWithKey({

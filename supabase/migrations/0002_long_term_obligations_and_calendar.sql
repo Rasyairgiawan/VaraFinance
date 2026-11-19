@@ -38,8 +38,10 @@ create table if not exists public.no_spend_confirmations (
 
 alter table public.no_spend_confirmations enable row level security;
 
+drop policy if exists "no_spend_confirmations_own" on public.no_spend_confirmations;
 create policy "no_spend_confirmations_own"
   on public.no_spend_confirmations
   for all
-  using (auth.uid() = user_id)
-  with check (auth.uid() = user_id);
+  to authenticated
+  using ((select auth.uid()) = user_id)
+  with check ((select auth.uid()) = user_id);

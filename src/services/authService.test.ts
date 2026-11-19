@@ -1,4 +1,12 @@
-import { beforeEach, describe, expect, it } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
+import {
+  buildAllowedOriginSet,
+  buildCorsHeaders,
+  evaluateCorsOrigin,
+  extractClientIp,
+  IsolateRateLimiter,
+  RATE_LIMIT_RULES,
+} from '../../supabase/functions/username-auth/security.ts';
 import {
   changePinWithCurrentPin,
   getPinCooldownSeconds,
@@ -257,5 +265,255 @@ describe('authService — Login, Password, 6-Digit PIN & Session Security', () =
     expect(relogin.session.deviceId).toBe('dev-brand-new-phone');
     expect(relogin.user.autoLockMinutes).toBe(15);
     expect(relogin.user.requirePinOnReopen).toBe(false);
+  });
+});
+
+describe('username-auth Edge Function Security — CORS Allowlist & Server-Side Rate Limiting', () => {
+  it('enforces strict origin allowlist from built-in and env-configured origins and rejects wildcard/untrusted origins', () => {
+    const allowed = buildAllowedOriginSet((key) => {
+      if (key === 'ALLOWED_ORIGINS') {
+        return 'https://app.example.com, https://staging.example.com/, *, invalid-url';
+      }
+      if (key === 'APP_URL') {
+        return 'https://portal.example.com/login';
+      }
+      return undefined;
+    });
+
+    // Built-in workspace/dev origins and Capacitor scheme allowed
+    expect(evaluateCorsOrigin('http://localhost:3000', allowed)).toEqual({
+      allowed: true,
+      matchedOrigin: 'http://localhost:3000',
+      hasOriginHeader: true,
+    });
+    expect(evaluateCorsOrigin('https://localhost', allowed)).toEqual({
+      allowed: true,
+      matchedOrigin: 'https://localhost',
+      hasOriginHeader: true,
+    });
+
+    // Env-configured production origins allowed
+    expect(evaluateCorsOrigin('https://app.example.com', allowed)).toEqual({
+      allowed: true,
+      matchedOrigin: 'https://app.example.com',
+      hasOriginHeader: true,
+    });
+    expect(evaluateCorsOrigin('https://portal.example.com', allowed)).toEqual({
+      allowed: true,
+      matchedOrigin: 'https://portal.example.com',
+      hasOriginHeader: true,
+    });
+
+    // Untrusted/spoofed origins rejected without reflecting Access-Control-Allow-Origin
+    expect(evaluateCorsOrigin('https://evil.example.com', allowed).allowed).toBe(false);
+    expect(evaluateCorsOrigin('https://app.example.com.evil.test', allowed).allowed).toBe(false);
+    expect(evaluateCorsOrigin('null', allowed).allowed).toBe(false);
+    expect(evaluateCorsOrigin('*', allowed).allowed).toBe(false);
+
+    // Non-browser request without Origin header does not emit ACAO header
+    const noOriginEval = evaluateCorsOrigin(null, allowed);
+    expect(noOriginEval.allowed).toBe(true);
+    expect(noOriginEval.matchedOrigin).toBeNull();
+    expect(buildCorsHeaders(null)).toEqual({ Vary: 'Origin' });
+
+    // Preflight headers include exact matched origin (never '*') and Vary: Origin
+    const preflightHeaders = buildCorsHeaders('https://app.example.com', { isPreflight: true });
+    expect(preflightHeaders['Access-Control-Allow-Origin']).toBe('https://app.example.com');
+    expect(preflightHeaders['Access-Control-Allow-Origin']).not.toBe('*');
+    expect(preflightHeaders['Vary']).toBe('Origin');
+    expect(preflightHeaders['Access-Control-Allow-Methods']).toBe('POST, OPTIONS');
+  });
+
+  it('enforces bounded per-isolate rate limits across check_username, login, and reset_password', () => {
+    let now = 1_000_000;
+    const limiter = new IsolateRateLimiter({ maxEntries: 50, nowFn: () => now });
+
+    // check_username: 15 requests/min per IP
+    for (let i = 0; i < RATE_LIMIT_RULES.checkUsernameByIp.maxRequests; i++) {
+      expect(
+        limiter.consumeAll([{ key: '203.0.113.10', rule: RATE_LIMIT_RULES.checkUsernameByIp }]).allowed
+      ).toBe(true);
+    }
+    const blockedCheck = limiter.consumeAll([
+      { key: '203.0.113.10', rule: RATE_LIMIT_RULES.checkUsernameByIp },
+    ]);
+    expect(blockedCheck.allowed).toBe(false);
+    expect(blockedCheck.retryAfterSeconds).toBeGreaterThan(0);
+
+    // Separate IP is unaffected
+    expect(
+      limiter.consumeAll([{ key: '203.0.113.11', rule: RATE_LIMIT_RULES.checkUsernameByIp }]).allowed
+    ).toBe(true);
+
+    // Window expiry restores quota
+    now += RATE_LIMIT_RULES.checkUsernameByIp.windowMs + 1;
+    expect(
+      limiter.consumeAll([{ key: '203.0.113.10', rule: RATE_LIMIT_RULES.checkUsernameByIp }]).allowed
+    ).toBe(true);
+
+    // login: 6 attempts/5 min per IP + username
+    for (let i = 0; i < RATE_LIMIT_RULES.loginByIpAndUser.maxRequests; i++) {
+      expect(
+        limiter.consumeAll([
+          { key: '198.51.100.5', rule: RATE_LIMIT_RULES.loginByIp },
+          { key: '198.51.100.5:target_user', rule: RATE_LIMIT_RULES.loginByIpAndUser },
+          { key: 'target_user', rule: RATE_LIMIT_RULES.loginByUser },
+        ]).allowed
+      ).toBe(true);
+    }
+    expect(
+      limiter.consumeAll([
+        { key: '198.51.100.5', rule: RATE_LIMIT_RULES.loginByIp },
+        { key: '198.51.100.5:target_user', rule: RATE_LIMIT_RULES.loginByIpAndUser },
+        { key: 'target_user', rule: RATE_LIMIT_RULES.loginByUser },
+      ]).allowed
+    ).toBe(false);
+
+    // reset_password: 3 attempts per identifier
+    for (let i = 0; i < RATE_LIMIT_RULES.resetByIdentifier.maxRequests; i++) {
+      expect(
+        limiter.consumeAll([
+          { key: `192.0.2.${i + 1}`, rule: RATE_LIMIT_RULES.resetByIp },
+          { key: 'alice_user', rule: RATE_LIMIT_RULES.resetByIdentifier },
+        ]).allowed
+      ).toBe(true);
+    }
+    expect(
+      limiter.consumeAll([
+        { key: '192.0.2.99', rule: RATE_LIMIT_RULES.resetByIp },
+        { key: 'alice_user', rule: RATE_LIMIT_RULES.resetByIdentifier },
+      ]).allowed
+    ).toBe(false);
+
+    // Bounded memory enforcement
+    for (let i = 0; i < 100; i++) {
+      limiter.consume(`flood-${i}`, RATE_LIMIT_RULES.checkUsernameByIp);
+    }
+    expect(limiter.size).toBeLessThanOrEqual(50);
+
+    // Client IP extraction prioritizes edge proxy headers safely
+    const headers = new Headers({
+      'cf-connecting-ip': '203.0.113.42',
+      'x-forwarded-for': '198.51.100.9, 10.0.0.1',
+    });
+    expect(extractClientIp(headers)).toBe('203.0.113.42');
+    expect(extractClientIp(new Headers())).toBe('unknown');
+  });
+});
+
+describe('Cloud Registration — Fail-Closed Username Availability Verification', () => {
+  beforeEach(() => {
+    vi.resetModules();
+    const mockStorage = createMockLocalStorage();
+    Object.defineProperty(globalThis, 'localStorage', {
+      value: mockStorage,
+      configurable: true,
+    });
+  });
+
+  it('fails closed and never calls signUp when Edge Function verification errors, times out, returns 429, or returns invalid payload', async () => {
+    const invokeMock = vi.fn();
+    const signUpMock = vi.fn();
+
+    vi.doMock('../lib/supabase', () => ({
+      isSupabaseConfigured: true,
+      supabase: {
+        functions: { invoke: invokeMock },
+        auth: { signUp: signUpMock },
+        from: vi.fn(),
+      },
+    }));
+
+    const { registerAccount: registerCloud } = await import('./authService');
+
+    // Case 1: Network / 500 Edge Function error
+    invokeMock.mockResolvedValueOnce({
+      data: null,
+      error: new Error('RelayError: Edge Function unreachable'),
+    });
+    await expect(
+      registerCloud({
+        username: 'cloud_user',
+        email: 'cloud@example.com',
+        password: 'Password123',
+        confirmPassword: 'Password123',
+        pin: '482910',
+        confirmPin: '482910',
+      })
+    ).rejects.toThrow(/tidak tersedia/i);
+    expect(signUpMock).not.toHaveBeenCalled();
+
+    // Case 2: HTTP 429 Rate Limit
+    invokeMock.mockResolvedValueOnce({
+      data: null,
+      error: { message: 'Edge Function returned a non-2xx status code', context: { status: 429 } },
+    });
+    await expect(
+      registerCloud({
+        username: 'cloud_user',
+        email: 'cloud@example.com',
+        password: 'Password123',
+        confirmPassword: 'Password123',
+        pin: '482910',
+        confirmPin: '482910',
+      })
+    ).rejects.toThrow(/Terlalu banyak percobaan/i);
+    expect(signUpMock).not.toHaveBeenCalled();
+
+    // Case 3: Malformed payload (missing boolean `available`)
+    invokeMock.mockResolvedValueOnce({
+      data: { unexpected: true },
+      error: null,
+    });
+    await expect(
+      registerCloud({
+        username: 'cloud_user',
+        email: 'cloud@example.com',
+        password: 'Password123',
+        confirmPassword: 'Password123',
+        pin: '482910',
+        confirmPin: '482910',
+      })
+    ).rejects.toThrow(/tidak dapat dipastikan/i);
+    expect(signUpMock).not.toHaveBeenCalled();
+
+    // Case 4: Username unavailable (available: false) — generic non-enumerating message
+    invokeMock.mockResolvedValueOnce({
+      data: { available: false },
+      error: null,
+    });
+    await expect(
+      registerCloud({
+        username: 'taken_user',
+        email: 'cloud@example.com',
+        password: 'Password123',
+        confirmPassword: 'Password123',
+        pin: '482910',
+        confirmPin: '482910',
+      })
+    ).rejects.toThrow(/Username tidak tersedia/i);
+    expect(signUpMock).not.toHaveBeenCalled();
+
+    // Case 5: Verified available (available: true) proceeds cleanly to signUp
+    invokeMock.mockResolvedValueOnce({
+      data: { available: true },
+      error: null,
+    });
+    signUpMock.mockResolvedValueOnce({
+      data: { user: { id: '11111111-1111-4111-8111-111111111111' }, session: null },
+      error: null,
+    });
+
+    const result = await registerCloud({
+      username: 'fresh_user',
+      email: 'fresh@example.com',
+      password: 'Password123',
+      confirmPassword: 'Password123',
+      pin: '482910',
+      confirmPin: '482910',
+    });
+    expect(signUpMock).toHaveBeenCalledTimes(1);
+    expect(result.user.mode).toBe('cloud');
+    expect(result.requiresEmailVerification).toBe(true);
   });
 });

@@ -58,6 +58,8 @@ BEGIN
     SELECT 1 FROM pg_policies WHERE schemaname = 'public' AND tablename = 'change_logs' AND policyname = 'change_logs_owner_all'
   ) THEN
     CREATE POLICY change_logs_owner_all ON public.change_logs
-      FOR ALL USING (auth.uid() = user_id) WITH CHECK (auth.uid() = user_id);
+      FOR ALL TO authenticated
+      USING ((SELECT auth.uid()) = user_id)
+      WITH CHECK ((SELECT auth.uid()) = user_id);
   END IF;
 END $$;

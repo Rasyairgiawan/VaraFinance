@@ -492,11 +492,32 @@ export async function registerAccount(input: RegisterInput): Promise<RegisterRes
       throw new Error('Email valid diperlukan untuk pembuatan akun Cloud Supabase & pemulihan password.');
     }
 
-    const { data: avail, error: availErr } = await supabase.rpc('is_username_available', {
-      p_username: normalized,
+    const { data: availData, error: availErr } = await supabase.functions.invoke('username-auth', {
+      body: { action: 'check_username', username: normalized },
     });
-    if (!availErr && avail === false) {
-      throw new Error(`Username "${displayUsername}" sudah digunakan. Pilih username lain.`);
+    if (availErr) {
+      const status =
+        typeof (availErr as { context?: { status?: number } }).context?.status === 'number'
+          ? (availErr as { context: { status: number } }).context.status
+          : undefined;
+      if (status === 429) {
+        throw new Error(
+          'Terlalu banyak percobaan verifikasi username. Silakan coba lagi beberapa saat lagi.'
+        );
+      }
+      throw new Error(
+        'Layanan verifikasi username sedang tidak tersedia. Pendaftaran akun cloud tidak dapat dilanjutkan saat ini.'
+      );
+    }
+    if (!availData || typeof availData.available !== 'boolean') {
+      throw new Error(
+        'Verifikasi ketersediaan username tidak dapat dipastikan. Pendaftaran akun cloud tidak dapat dilanjutkan saat ini.'
+      );
+    }
+    if (availData.available !== true) {
+      throw new Error(
+        'Username tidak tersedia atau tidak memenuhi syarat. Silakan pilih username lain.'
+      );
     }
 
     const { data, error } = await supabase.auth.signUp({
@@ -656,12 +677,49 @@ export async function loginWithPassword(input: LoginInput): Promise<{
   }
 
   if (isSupabaseConfigured && supabase) {
-    let loginEmail = rawIdentifier;
+    let authUser = null;
+    let resolvedUsername: string | undefined;
+
     if (!rawIdentifier.includes('@')) {
-      const { data: resolvedEmail, error: rpcErr } = await supabase.rpc('resolve_login_email', {
-        p_username: normalizeUsername(rawIdentifier),
+      const { data: fnData, error: fnErr } = await supabase.functions.invoke('username-auth', {
+        body: {
+          action: 'login',
+          username: normalizeUsername(rawIdentifier),
+          password: input.password,
+        },
       });
-      if (rpcErr || !resolvedEmail) {
+      if (fnErr || !fnData?.access_token || !fnData?.refresh_token) {
+        const status =
+          typeof (fnErr as { context?: { status?: number } } | null)?.context?.status === 'number'
+            ? (fnErr as { context: { status: number } }).context.status
+            : undefined;
+        const nextFails = loginGuard.failedAttempts + 1;
+        const lockMs = nextFails >= 8 ? 120_000 : nextFails >= 5 ? 30_000 : 0;
+        saveLoginGuard({
+          failedAttempts: nextFails,
+          lockedUntil: lockMs > 0 ? Date.now() + lockMs : null,
+        });
+        if (status === 429) {
+          throw new Error('Terlalu banyak percobaan login. Silakan coba lagi beberapa saat lagi.');
+        }
+        throw new Error('Username atau password tidak sesuai.');
+      }
+
+      const { data: sessionData, error: setSessionErr } = await supabase.auth.setSession({
+        access_token: fnData.access_token,
+        refresh_token: fnData.refresh_token,
+      });
+      if (setSessionErr || !sessionData.user) {
+        throw new Error('Gagal membangun sesi autentikasi cloud.');
+      }
+      authUser = sessionData.user;
+      resolvedUsername = fnData.user?.username;
+    } else {
+      const { data, error } = await supabase.auth.signInWithPassword({
+        email: rawIdentifier,
+        password: input.password,
+      });
+      if (error || !data.user) {
         const nextFails = loginGuard.failedAttempts + 1;
         const lockMs = nextFails >= 8 ? 120_000 : nextFails >= 5 ? 30_000 : 0;
         saveLoginGuard({
@@ -670,31 +728,18 @@ export async function loginWithPassword(input: LoginInput): Promise<{
         });
         throw new Error('Username atau password tidak sesuai.');
       }
-      loginEmail = resolvedEmail;
-    }
-
-    const { data, error } = await supabase.auth.signInWithPassword({
-      email: loginEmail,
-      password: input.password,
-    });
-    if (error || !data.user) {
-      const nextFails = loginGuard.failedAttempts + 1;
-      const lockMs = nextFails >= 8 ? 120_000 : nextFails >= 5 ? 30_000 : 0;
-      saveLoginGuard({
-        failedAttempts: nextFails,
-        lockedUntil: lockMs > 0 ? Date.now() + lockMs : null,
-      });
-      throw new Error('Username atau password tidak sesuai.');
+      authUser = data.user;
     }
 
     clearLoginGuard();
     const displayUsername =
-      (data.user.user_metadata?.username as string | undefined) ||
+      resolvedUsername ||
+      (authUser.user_metadata?.username as string | undefined) ||
       (rawIdentifier.includes('@') ? rawIdentifier.split('@')[0] : rawIdentifier);
     const session = createSessionRecord({
-      userId: data.user.id,
+      userId: authUser.id,
       username: displayUsername,
-      email: data.user.email ?? loginEmail,
+      email: authUser.email ?? (rawIdentifier.includes('@') ? rawIdentifier : undefined),
       mode: 'cloud',
     });
     const summary = getUserSummaryForSession(session)!;
@@ -1080,27 +1125,40 @@ export async function regenerateLocalRecoveryKey(
   return newRecoveryKey;
 }
 
-export async function requestCloudPasswordReset(usernameOrEmail: string): Promise<string> {
+export async function requestCloudPasswordReset(usernameOrEmail: string): Promise<void> {
   if (!isSupabaseConfigured || !supabase) {
     throw new Error('Mode Cloud Supabase belum dikonfigurasi pada environment ini.');
   }
   const trimmed = usernameOrEmail.trim();
   if (!trimmed) throw new Error('Masukkan username atau email terdaftar.');
 
-  let email = trimmed;
+  const redirectTo = typeof window !== 'undefined' ? window.location.origin : undefined;
+
   if (!trimmed.includes('@')) {
-    const { data: resolved, error } = await supabase.rpc('resolve_login_email', {
-      p_username: normalizeUsername(trimmed),
+    const { error } = await supabase.functions.invoke('username-auth', {
+      body: {
+        action: 'reset_password',
+        identifier: normalizeUsername(trimmed),
+        redirectTo,
+      },
     });
-    if (error || !resolved) {
-      throw new Error('Username tidak ditemukan atau tidak memiliki email pemulihan terdaftar.');
+    if (error) {
+      const status =
+        typeof (error as { context?: { status?: number } }).context?.status === 'number'
+          ? (error as { context: { status: number } }).context.status
+          : undefined;
+      if (status === 429) {
+        throw new Error(
+          'Terlalu banyak permintaan reset password. Silakan coba lagi beberapa saat lagi.'
+        );
+      }
+      throw new Error('Gagal memproses permintaan reset password.');
     }
-    email = resolved;
+    return;
   }
 
-  const { error } = await supabase.auth.resetPasswordForEmail(email, {
-    redirectTo: typeof window !== 'undefined' ? window.location.origin : undefined,
+  const { error } = await supabase.auth.resetPasswordForEmail(trimmed, {
+    redirectTo,
   });
   if (error) throw new Error(error.message);
-  return email;
 }

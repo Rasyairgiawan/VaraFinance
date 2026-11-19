@@ -4,13 +4,14 @@
 
 create extension if not exists "pgcrypto";
 
--- Helper trigger for updated_at
+-- Helper trigger for updated_at (search_path hardened)
 create or replace function public.handle_updated_at()
 returns trigger
 language plpgsql
+set search_path = ''
 as $$
 begin
-  new.updated_at = now();
+  new.updated_at = pg_catalog.now();
   return new;
 end;
 $$;
@@ -33,6 +34,7 @@ create table if not exists public.profiles (
   updated_at timestamptz not null default now()
 );
 
+drop trigger if exists profiles_updated_at on public.profiles;
 create trigger profiles_updated_at
   before update on public.profiles
   for each row execute function public.handle_updated_at();
@@ -50,6 +52,7 @@ create table if not exists public.accounts (
   updated_at timestamptz not null default now()
 );
 
+drop trigger if exists accounts_updated_at on public.accounts;
 create trigger accounts_updated_at
   before update on public.accounts
   for each row execute function public.handle_updated_at();
@@ -83,6 +86,7 @@ create table if not exists public.freelance_projects (
   updated_at timestamptz not null default now()
 );
 
+drop trigger if exists freelance_projects_updated_at on public.freelance_projects;
 create trigger freelance_projects_updated_at
   before update on public.freelance_projects
   for each row execute function public.handle_updated_at();
@@ -111,6 +115,7 @@ create table if not exists public.transactions (
 
 create index if not exists idx_transactions_user_date on public.transactions(user_id, date desc);
 
+drop trigger if exists transactions_updated_at on public.transactions;
 create trigger transactions_updated_at
   before update on public.transactions
   for each row execute function public.handle_updated_at();
@@ -172,6 +177,7 @@ create table if not exists public.debts (
   updated_at timestamptz not null default now()
 );
 
+drop trigger if exists debts_updated_at on public.debts;
 create trigger debts_updated_at
   before update on public.debts
   for each row execute function public.handle_updated_at();
@@ -203,6 +209,7 @@ create table if not exists public.recurring_obligations (
   updated_at timestamptz not null default now()
 );
 
+drop trigger if exists recurring_obligations_updated_at on public.recurring_obligations;
 create trigger recurring_obligations_updated_at
   before update on public.recurring_obligations
   for each row execute function public.handle_updated_at();
@@ -237,6 +244,7 @@ create table if not exists public.savings_goals (
   updated_at timestamptz not null default now()
 );
 
+drop trigger if exists savings_goals_updated_at on public.savings_goals;
 create trigger savings_goals_updated_at
   before update on public.savings_goals
   for each row execute function public.handle_updated_at();
@@ -284,18 +292,33 @@ alter table public.savings_goals enable row level security;
 alter table public.goal_contributions enable row level security;
 alter table public.financial_mode_logs enable row level security;
 
-create policy "profiles_own" on public.profiles for all using (auth.uid() = id) with check (auth.uid() = id);
-create policy "accounts_own" on public.accounts for all using (auth.uid() = user_id) with check (auth.uid() = user_id);
-create policy "categories_own" on public.categories for all using (auth.uid() = user_id) with check (auth.uid() = user_id);
-create policy "freelance_projects_own" on public.freelance_projects for all using (auth.uid() = user_id) with check (auth.uid() = user_id);
-create policy "transactions_own" on public.transactions for all using (auth.uid() = user_id) with check (auth.uid() = user_id);
-create policy "transfers_own" on public.transfers for all using (auth.uid() = user_id) with check (auth.uid() = user_id);
-create policy "project_payments_own" on public.project_payments for all using (auth.uid() = user_id) with check (auth.uid() = user_id);
-create policy "project_expenses_own" on public.project_expenses for all using (auth.uid() = user_id) with check (auth.uid() = user_id);
-create policy "debts_own" on public.debts for all using (auth.uid() = user_id) with check (auth.uid() = user_id);
-create policy "debt_payments_own" on public.debt_payments for all using (auth.uid() = user_id) with check (auth.uid() = user_id);
-create policy "recurring_obligations_own" on public.recurring_obligations for all using (auth.uid() = user_id) with check (auth.uid() = user_id);
-create policy "obligation_logs_own" on public.obligation_logs for all using (auth.uid() = user_id) with check (auth.uid() = user_id);
-create policy "savings_goals_own" on public.savings_goals for all using (auth.uid() = user_id) with check (auth.uid() = user_id);
-create policy "goal_contributions_own" on public.goal_contributions for all using (auth.uid() = user_id) with check (auth.uid() = user_id);
-create policy "financial_mode_logs_own" on public.financial_mode_logs for all using (auth.uid() = user_id) with check (auth.uid() = user_id);
+drop policy if exists "profiles_own" on public.profiles;
+create policy "profiles_own" on public.profiles for all to authenticated using ((select auth.uid()) = id) with check ((select auth.uid()) = id);
+drop policy if exists "accounts_own" on public.accounts;
+create policy "accounts_own" on public.accounts for all to authenticated using ((select auth.uid()) = user_id) with check ((select auth.uid()) = user_id);
+drop policy if exists "categories_own" on public.categories;
+create policy "categories_own" on public.categories for all to authenticated using ((select auth.uid()) = user_id) with check ((select auth.uid()) = user_id);
+drop policy if exists "freelance_projects_own" on public.freelance_projects;
+create policy "freelance_projects_own" on public.freelance_projects for all to authenticated using ((select auth.uid()) = user_id) with check ((select auth.uid()) = user_id);
+drop policy if exists "transactions_own" on public.transactions;
+create policy "transactions_own" on public.transactions for all to authenticated using ((select auth.uid()) = user_id) with check ((select auth.uid()) = user_id);
+drop policy if exists "transfers_own" on public.transfers;
+create policy "transfers_own" on public.transfers for all to authenticated using ((select auth.uid()) = user_id) with check ((select auth.uid()) = user_id);
+drop policy if exists "project_payments_own" on public.project_payments;
+create policy "project_payments_own" on public.project_payments for all to authenticated using ((select auth.uid()) = user_id) with check ((select auth.uid()) = user_id);
+drop policy if exists "project_expenses_own" on public.project_expenses;
+create policy "project_expenses_own" on public.project_expenses for all to authenticated using ((select auth.uid()) = user_id) with check ((select auth.uid()) = user_id);
+drop policy if exists "debts_own" on public.debts;
+create policy "debts_own" on public.debts for all to authenticated using ((select auth.uid()) = user_id) with check ((select auth.uid()) = user_id);
+drop policy if exists "debt_payments_own" on public.debt_payments;
+create policy "debt_payments_own" on public.debt_payments for all to authenticated using ((select auth.uid()) = user_id) with check ((select auth.uid()) = user_id);
+drop policy if exists "recurring_obligations_own" on public.recurring_obligations;
+create policy "recurring_obligations_own" on public.recurring_obligations for all to authenticated using ((select auth.uid()) = user_id) with check ((select auth.uid()) = user_id);
+drop policy if exists "obligation_logs_own" on public.obligation_logs;
+create policy "obligation_logs_own" on public.obligation_logs for all to authenticated using ((select auth.uid()) = user_id) with check ((select auth.uid()) = user_id);
+drop policy if exists "savings_goals_own" on public.savings_goals;
+create policy "savings_goals_own" on public.savings_goals for all to authenticated using ((select auth.uid()) = user_id) with check ((select auth.uid()) = user_id);
+drop policy if exists "goal_contributions_own" on public.goal_contributions;
+create policy "goal_contributions_own" on public.goal_contributions for all to authenticated using ((select auth.uid()) = user_id) with check ((select auth.uid()) = user_id);
+drop policy if exists "financial_mode_logs_own" on public.financial_mode_logs;
+create policy "financial_mode_logs_own" on public.financial_mode_logs for all to authenticated using ((select auth.uid()) = user_id) with check ((select auth.uid()) = user_id);
