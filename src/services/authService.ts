@@ -1,12 +1,13 @@
 import { isSupabaseConfigured, supabase } from '../lib/supabase';
 import {
+  AccountLinkRecord,
   AuthProviderMode,
   AuthSession,
   AuthUserSummary,
   PinGuardState,
   SecurityPreferences,
 } from '../types/finance';
-import { generateId } from '../utils/format';
+import { generateId, isValidUUID } from '../utils/format';
 import {
   getOrCreateDeviceId,
   loadLocalState,
@@ -16,12 +17,36 @@ import {
 
 const AUTH_USERS_KEY = 'kendaliuang_auth_users_v1';
 const AUTH_SESSION_KEY = 'kendaliuang_auth_session_v1';
+const ACCOUNT_LINKS_KEY = 'kendaliuang_account_links_v1';
+const PENDING_CLOUD_PROFILE_PREFIX = 'kendaliuang_pending_cloud_profile_v1_';
 const PIN_GUARD_PREFIX = 'kendaliuang_pin_guard_v1_';
 const LOGIN_GUARD_KEY = 'kendaliuang_login_guard_v1';
+const LOCAL_FINANCE_STORAGE_PREFIX = 'kendaliuang_state_v1';
 
 const PASSWORD_PBKDF2_ITERATIONS = 120_000;
 const PIN_PBKDF2_ITERATIONS = 100_000;
 const SESSION_TTL_MS = 7 * 24 * 60 * 60 * 1000; // 7 days
+
+// Strictly aligned with SQL (0004/0005) & username-auth Edge Function: ^[A-Za-z0-9._]{3,24}$
+export const USERNAME_VALIDATION_REGEX = /^[a-zA-Z0-9._]{3,24}$/;
+
+export type CloudAuthErrorCode =
+  | 'EMAIL_NOT_CONFIRMED'
+  | 'CLOUD_UNAVAILABLE'
+  | 'RATE_LIMITED'
+  | 'LINK_CONFLICT'
+  | 'ACCOUNT_EXISTS'
+  | 'INVALID_CREDENTIALS';
+
+export class CloudAuthError extends Error {
+  readonly code: CloudAuthErrorCode;
+
+  constructor(message: string, code: CloudAuthErrorCode) {
+    super(message);
+    this.name = 'CloudAuthError';
+    this.code = code;
+  }
+}
 
 interface StoredLocalAuthUser {
   userId: string;
@@ -34,8 +59,19 @@ interface StoredLocalAuthUser {
   pinEnabled: boolean;
   requirePinOnReopen: boolean;
   autoLockMinutes: number;
+  linkedCloudUserId?: string;
+  linkedCloudEmail?: string;
   createdAt: string;
   updatedAt: string;
+}
+
+interface PendingCloudProfileSetup {
+  userId: string;
+  username: string;
+  fullName: string;
+  email: string;
+  pinHash: string;
+  createdAt: string;
 }
 
 export interface RegisterInput {
@@ -45,10 +81,11 @@ export interface RegisterInput {
   confirmPassword: string;
   pin: string;
   confirmPin: string;
+  mode?: AuthProviderMode;
 }
 
 export interface RegisterResult {
-  session: AuthSession;
+  session: AuthSession | null;
   user: AuthUserSummary;
   recoveryKey: string | null; // Shown once in local mode for offline password recovery
   requiresEmailVerification?: boolean;
@@ -57,6 +94,7 @@ export interface RegisterResult {
 export interface LoginInput {
   username: string;
   password: string;
+  preferredMode?: 'auto' | 'local' | 'cloud';
 }
 
 export interface PinVerificationResult {
@@ -71,6 +109,21 @@ export interface PasswordStrengthReport {
   score: 0 | 1 | 2 | 3;
   label: 'Terlalu pendek' | 'Lemah' | 'Sedang' | 'Kuat';
   errors: string[];
+}
+
+export interface LinkAccountResult {
+  link: AccountLinkRecord;
+  session: AuthSession;
+  user: AuthUserSummary;
+  alreadyLinked: boolean;
+}
+
+export interface RegisterAndLinkResult {
+  linked: boolean;
+  requiresEmailVerification: boolean;
+  link?: AccountLinkRecord;
+  session: AuthSession;
+  user: AuthUserSummary;
 }
 
 function getSubtleCrypto(): SubtleCrypto | null {
@@ -147,7 +200,6 @@ export async function hashSecretPBKDF2(
     return `pbkdf2_sha256$${iterations}$${bytesToHex(salt)}$${derivedHex}`;
   }
 
-  // Fallback only if SubtleCrypto is completely unavailable in environment
   const fallbackInput = `${bytesToHex(salt)}:${normalized}`;
   let h = 2166136261;
   for (let i = 0; i < fallbackInput.length; i++) {
@@ -177,7 +229,6 @@ export async function verifySecretPBKDF2(secret: string, storedHash: string): Pr
     return constantTimeEqual(recomputed, storedHash);
   }
 
-  // Legacy unsalted SHA-256 PIN migration check (64 hex chars)
   if (/^[a-f0-9]{64}$/i.test(storedHash)) {
     const subtle = getSubtleCrypto();
     if (!subtle) return false;
@@ -198,8 +249,8 @@ export function validateUsername(raw: string): string | null {
   const trimmed = raw.trim();
   if (trimmed.length < 3) return 'Username minimal 3 karakter.';
   if (trimmed.length > 24) return 'Username maksimal 24 karakter.';
-  if (!/^[a-zA-Z0-9._-]+$/.test(trimmed)) {
-    return 'Username hanya boleh berisi huruf, angka, titik (.), garis bawah (_), atau tanda hubung (-).';
+  if (!/^[a-zA-Z0-9._]+$/.test(trimmed)) {
+    return 'Username hanya boleh berisi huruf, angka, titik (.), atau garis bawah (_).';
   }
   return null;
 }
@@ -269,12 +320,97 @@ function writeLocalUsers(users: StoredLocalAuthUser[]): void {
   localStorage.setItem(AUTH_USERS_KEY, JSON.stringify(users));
 }
 
+export function listAccountLinks(): AccountLinkRecord[] {
+  try {
+    const raw = localStorage.getItem(ACCOUNT_LINKS_KEY);
+    if (!raw) return [];
+    const parsed = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return [];
+    return parsed.filter(
+      (item): item is AccountLinkRecord =>
+        Boolean(item) &&
+        typeof item === 'object' &&
+        typeof item.localUserId === 'string' &&
+        item.localUserId.trim().length > 0 &&
+        typeof item.cloudUserId === 'string' &&
+        isValidUUID(item.cloudUserId) &&
+        item.status === 'linked'
+    );
+  } catch {
+    return [];
+  }
+}
+
+function writeAccountLinks(links: AccountLinkRecord[]): void {
+  localStorage.setItem(ACCOUNT_LINKS_KEY, JSON.stringify(links));
+}
+
+export function getAccountLinkByLocalUserId(localUserId: string): AccountLinkRecord | null {
+  if (!localUserId) return null;
+  return listAccountLinks().find((l) => l.localUserId === localUserId) ?? null;
+}
+
+export function getAccountLinkByCloudUserId(cloudUserId: string): AccountLinkRecord | null {
+  if (!cloudUserId || !isValidUUID(cloudUserId)) return null;
+  const normalized = cloudUserId.toLowerCase();
+  return listAccountLinks().find((l) => l.cloudUserId.toLowerCase() === normalized) ?? null;
+}
+
+/**
+ * Resolves the local FinanceState storage owner ID for a session:
+ * - If a local account is linked to a Supabase cloud account, BOTH local & cloud logins
+ *   resolve to that local account's `localUserId` without migrating/wiping/merging data.
+ * - Unlinked cloud accounts resolve strictly to `auth.uid()` (`cloudUserId`).
+ * - Unlinked local accounts resolve strictly to `localUserId` (`usr-...`).
+ */
+export function resolveStorageUserId(session: AuthSession | null | undefined): string | null {
+  if (!session) return null;
+  if (session.mode === 'local') {
+    return session.localUserId || session.userId;
+  }
+  const cloudId = (session.cloudUserId || session.userId).toLowerCase();
+  if (!isValidUUID(cloudId)) return null;
+  const link = getAccountLinkByCloudUserId(cloudId);
+  return link ? link.localUserId : session.cloudUserId || session.userId;
+}
+
+function savePendingCloudProfileSetup(setup: PendingCloudProfileSetup): void {
+  try {
+    localStorage.setItem(
+      `${PENDING_CLOUD_PROFILE_PREFIX}${setup.userId.toLowerCase()}`,
+      JSON.stringify(setup)
+    );
+  } catch {
+    // ignore quota errors
+  }
+}
+
+function consumePendingCloudProfileSetup(userId: string): PendingCloudProfileSetup | null {
+  try {
+    const key = `${PENDING_CLOUD_PROFILE_PREFIX}${userId.toLowerCase()}`;
+    const raw = localStorage.getItem(key);
+    if (!raw) return null;
+    localStorage.removeItem(key);
+    return JSON.parse(raw) as PendingCloudProfileSetup;
+  } catch {
+    return null;
+  }
+}
+
 function toUserSummary(u: StoredLocalAuthUser, mode: AuthProviderMode): AuthUserSummary {
+  const link = getAccountLinkByLocalUserId(u.userId);
+  const linkedCloudUserId = link?.cloudUserId ?? u.linkedCloudUserId;
+  const linkedCloudEmail = link?.cloudEmail ?? u.linkedCloudEmail ?? u.email;
   return {
     userId: u.userId,
     username: u.usernameDisplay || u.username,
-    email: u.email,
+    email: linkedCloudEmail,
     mode,
+    localUserId: u.userId,
+    cloudUserId: linkedCloudUserId,
+    linkedCloudUserId,
+    linkedCloudEmail,
+    isLinked: Boolean(linkedCloudUserId),
     pinConfigured: Boolean(u.pinHash),
     pinEnabled: u.pinEnabled && Boolean(u.pinHash),
     requirePinOnReopen: u.requirePinOnReopen,
@@ -342,19 +478,128 @@ function clearLoginGuard(): void {
   localStorage.removeItem(LOGIN_GUARD_KEY);
 }
 
+function recordFailedLoginAttempt(currentGuard: PinGuardState): void {
+  const nextFails = currentGuard.failedAttempts + 1;
+  const lockMs = nextFails >= 8 ? 120_000 : nextFails >= 5 ? 30_000 : 0;
+  saveLoginGuard({
+    failedAttempts: nextFails,
+    lockedUntil: lockMs > 0 ? Date.now() + lockMs : null,
+  });
+}
+
+function extractHttpStatus(err: unknown): number | undefined {
+  if (!err || typeof err !== 'object') return undefined;
+  const rec = err as { status?: unknown; context?: { status?: unknown } };
+  if (typeof rec.context?.status === 'number') return rec.context.status;
+  if (typeof rec.status === 'number') return rec.status;
+  return undefined;
+}
+
+function isEmailNotConfirmedError(err: unknown, fnData?: unknown): boolean {
+  if (
+    fnData &&
+    typeof fnData === 'object' &&
+    (fnData as { code?: unknown }).code === 'EMAIL_NOT_CONFIRMED'
+  ) {
+    return true;
+  }
+  if (!err || typeof err !== 'object') return false;
+  const rec = err as { message?: unknown; code?: unknown };
+  if (rec.code === 'email_not_confirmed') return true;
+  if (typeof rec.message === 'string' && /email not confirmed/i.test(rec.message)) {
+    return true;
+  }
+  return false;
+}
+
+function isCloudNetworkUnavailableError(err: unknown): boolean {
+  const status = extractHttpStatus(err);
+  if (typeof status === 'number') {
+    return status >= 500 || status === 0;
+  }
+  if (!err || typeof err !== 'object') return false;
+  const name = (err as { name?: unknown }).name;
+  const msg = String((err as { message?: unknown }).message ?? '');
+  if (name === 'FunctionsFetchError' || name === 'AuthRetryableFetchError') return true;
+  if (
+    /failed to fetch|networkerror|network request failed|fetcherror|timed out|timeout|unreachable|econnrefused|offline/i.test(
+      msg
+    )
+  ) {
+    return true;
+  }
+  return false;
+}
+
+function hasMeaningfulLocalFinanceData(userId: string): boolean {
+  try {
+    const raw = localStorage.getItem(`${LOCAL_FINANCE_STORAGE_PREFIX}_${userId}`);
+    if (!raw) return false;
+    const parsed = JSON.parse(raw) as Partial<ReturnType<typeof loadLocalState>>;
+    const hasTxs = Array.isArray(parsed.transactions) && parsed.transactions.length > 0;
+    const hasProjects = Array.isArray(parsed.projects) && parsed.projects.length > 0;
+    const hasSplitBills = Array.isArray(parsed.splitBills) && parsed.splitBills.length > 0;
+    const hasCustodial = Array.isArray(parsed.custodialFunds) && parsed.custodialFunds.length > 0;
+    const hasAdvances = Array.isArray(parsed.projectAdvances) && parsed.projectAdvances.length > 0;
+    const hasAssets = Array.isArray(parsed.physicalAssets) && parsed.physicalAssets.length > 0;
+    const hasLoans = Array.isArray(parsed.physicalItemLoans) && parsed.physicalItemLoans.length > 0;
+    const hasTransfers = Array.isArray(parsed.transfers) && parsed.transfers.length > 0;
+    const hasLogs = Array.isArray(parsed.changeLogs) && parsed.changeLogs.length > 0;
+    return (
+      hasTxs ||
+      hasProjects ||
+      hasSplitBills ||
+      hasCustodial ||
+      hasAdvances ||
+      hasAssets ||
+      hasLoans ||
+      hasTransfers ||
+      hasLogs
+    );
+  } catch {
+    return false;
+  }
+}
+
 function createSessionRecord(params: {
   userId: string;
   username: string;
   email?: string;
   mode: AuthProviderMode;
+  localUserId?: string;
+  cloudUserId?: string;
+  expiresAtMs?: number;
 }): AuthSession {
   const now = new Date();
-  const expires = new Date(now.getTime() + SESSION_TTL_MS);
+  const expiresMs =
+    typeof params.expiresAtMs === 'number' && Number.isFinite(params.expiresAtMs)
+      ? params.expiresAtMs
+      : now.getTime() + SESSION_TTL_MS;
+  const expires = new Date(expiresMs);
+
+  let resolvedLocalId = params.localUserId;
+  let resolvedCloudId = params.cloudUserId;
+  if (params.mode === 'local') {
+    resolvedLocalId = resolvedLocalId ?? params.userId;
+    resolvedCloudId = resolvedCloudId ?? getAccountLinkByLocalUserId(resolvedLocalId)?.cloudUserId;
+  } else {
+    resolvedCloudId = resolvedCloudId ?? params.userId;
+    resolvedLocalId = resolvedLocalId ?? getAccountLinkByCloudUserId(resolvedCloudId)?.localUserId;
+  }
+
+  const storageUserId =
+    params.mode === 'local'
+      ? resolvedLocalId!
+      : resolvedLocalId ?? resolvedCloudId!;
+
   const session: AuthSession = {
     userId: params.userId,
     username: params.username,
     email: params.email,
     mode: params.mode,
+    ...(resolvedLocalId ? { localUserId: resolvedLocalId } : {}),
+    ...(resolvedCloudId ? { cloudUserId: resolvedCloudId } : {}),
+    storageUserId,
     deviceId: getOrCreateDeviceId(),
     issuedAt: now.toISOString(),
     lastActiveAt: now.toISOString(),
@@ -381,17 +626,38 @@ export function getStoredSession(): AuthSession | null {
       return null;
     }
 
-    // In local mode, ensure the user record actually exists
     if (parsed.mode === 'local') {
+      const localId = parsed.localUserId || parsed.userId;
       const users = readLocalUsers();
-      const exists = users.some((u) => u.userId === parsed.userId);
+      const exists = users.some((u) => u.userId === localId);
       if (!exists) {
         localStorage.removeItem(AUTH_SESSION_KEY);
         return null;
       }
+      const link = getAccountLinkByLocalUserId(localId);
+      return {
+        ...parsed,
+        userId: localId,
+        localUserId: localId,
+        cloudUserId: link?.cloudUserId,
+        storageUserId: localId,
+      };
     }
 
-    return parsed;
+    // Cloud mode: cloud userId MUST be a valid Supabase auth.uid() UUID (never usr-*)
+    const cloudId = parsed.cloudUserId || parsed.userId;
+    if (!isValidUUID(cloudId)) {
+      localStorage.removeItem(AUTH_SESSION_KEY);
+      return null;
+    }
+    const link = getAccountLinkByCloudUserId(cloudId);
+    return {
+      ...parsed,
+      userId: cloudId,
+      cloudUserId: cloudId,
+      localUserId: link?.localUserId,
+      storageUserId: link ? link.localUserId : cloudId,
+    };
   } catch {
     return null;
   }
@@ -401,10 +667,14 @@ export function touchSessionActivity(): AuthSession | null {
   const current = getStoredSession();
   if (!current) return null;
   const now = new Date();
+  const nextExpiresAt =
+    current.mode === 'cloud'
+      ? current.expiresAt
+      : new Date(now.getTime() + SESSION_TTL_MS).toISOString();
   const updated: AuthSession = {
     ...current,
     lastActiveAt: now.toISOString(),
-    expiresAt: new Date(now.getTime() + SESSION_TTL_MS).toISOString(),
+    expiresAt: nextExpiresAt,
   };
   try {
     localStorage.setItem(AUTH_SESSION_KEY, JSON.stringify(updated));
@@ -417,15 +687,25 @@ export function touchSessionActivity(): AuthSession | null {
 export function getUserSummaryForSession(session: AuthSession | null): AuthUserSummary | null {
   if (!session) return null;
   if (session.mode === 'local') {
-    const u = readLocalUsers().find((x) => x.userId === session.userId);
+    const localId = session.localUserId || session.userId;
+    const u = readLocalUsers().find((x) => x.userId === localId);
     return u ? toUserSummary(u, 'local') : null;
   }
-  const state = loadLocalState(session.userId);
+
+  const cloudId = session.cloudUserId || session.userId;
+  const link = getAccountLinkByCloudUserId(cloudId);
+  const storageId = link ? link.localUserId : cloudId;
+  const state = loadLocalState(storageId);
+
   return {
-    userId: session.userId,
-    username: state.settings.username || session.username,
-    email: session.email,
+    userId: cloudId,
+    username: state.settings.username || link?.cloudUsername || session.username,
+    email: session.email || link?.cloudEmail,
     mode: 'cloud',
+    cloudUserId: cloudId,
+    ...(link ? { localUserId: link.localUserId, linkedLocalUserId: link.localUserId } : {}),
+    linkedCloudEmail: session.email || link?.cloudEmail,
+    isLinked: Boolean(link),
     pinConfigured: Boolean(state.settings.securityPinHash),
     pinEnabled: Boolean(state.settings.pinEnabled && state.settings.securityPinHash),
     requirePinOnReopen: state.settings.requirePinOnReopen ?? true,
@@ -435,29 +715,170 @@ export function getUserSummaryForSession(session: AuthSession | null): AuthUserS
   };
 }
 
+async function applyPendingCloudProfileBootstrap(supaUser: {
+  id: string;
+  email?: string | null;
+  user_metadata?: Record<string, unknown>;
+}): Promise<void> {
+  if (!supabase || !isSupabaseConfigured) return;
+  const pending = consumePendingCloudProfileSetup(supaUser.id);
+  const metaUsername =
+    typeof supaUser.user_metadata?.username === 'string'
+      ? supaUser.user_metadata.username.trim()
+      : undefined;
+
+  if (!pending && !metaUsername) return;
+
+  const link = getAccountLinkByCloudUserId(supaUser.id);
+  const storageId = link ? link.localUserId : supaUser.id;
+  const currentState = loadLocalState(storageId);
+
+  if (pending) {
+    const nextState = {
+      ...currentState,
+      settings: {
+        ...currentState.settings,
+        fullName:
+          currentState.settings.fullName === 'Pengguna VaraFinance' ||
+          currentState.settings.fullName === 'Pengguna KendaliUang'
+            ? pending.fullName
+            : currentState.settings.fullName,
+        username: pending.username,
+        securityPinHash: currentState.settings.securityPinHash || pending.pinHash,
+        pinEnabled: true,
+        requirePinOnReopen: currentState.settings.requirePinOnReopen ?? true,
+        autoLockMinutes: currentState.settings.autoLockMinutes ?? 5,
+      },
+    };
+    saveLocalState(nextState, storageId);
+  }
+
+  try {
+    const { data: existingProfile } = await supabase
+      .from('profiles')
+      .select('id, username')
+      .eq('id', supaUser.id)
+      .maybeSingle();
+
+    if (!existingProfile) {
+      await supabase.from('profiles').upsert({
+        id: supaUser.id,
+        full_name: pending?.fullName ?? currentState.settings.fullName,
+        username: pending?.username ?? metaUsername ?? currentState.settings.username ?? null,
+        recovery_email: supaUser.email ?? pending?.email ?? null,
+        security_pin_hash: pending?.pinHash ?? currentState.settings.securityPinHash ?? null,
+        pin_enabled: Boolean(pending?.pinHash || currentState.settings.pinEnabled),
+        require_pin_on_reopen: currentState.settings.requirePinOnReopen ?? true,
+        auto_lock_minutes: currentState.settings.autoLockMinutes ?? 5,
+      });
+    } else if (!existingProfile.username && (pending?.username || metaUsername)) {
+      await supabase
+        .from('profiles')
+        .update({ username: pending?.username ?? metaUsername })
+        .eq('id', supaUser.id);
+    }
+  } catch {
+    // Non-blocking profile sync if offline
+  }
+}
+
 export async function resolveValidSession(): Promise<AuthSession | null> {
   const localSess = getStoredSession();
+
+  // Never overwrite an active Local Mode session with a leftover cloud session
+  if (localSess?.mode === 'local') {
+    return localSess;
+  }
+
   if (isSupabaseConfigured && supabase) {
     try {
-      const { data } = await supabase.auth.getSession();
-      const supaUser = data.session?.user;
-      if (supaUser) {
-        if (localSess && localSess.userId === supaUser.id && localSess.mode === 'cloud') {
+      const { data, error } = await supabase.auth.getSession();
+      if (error) {
+        if (isCloudNetworkUnavailableError(error) && localSess) {
           return localSess;
         }
-        const usernameFromMeta =
-          (supaUser.user_metadata?.username as string | undefined) ||
-          supaUser.email?.split('@')[0] ||
-          'pengguna';
-        return createSessionRecord({
-          userId: supaUser.id,
-          username: usernameFromMeta,
-          email: supaUser.email ?? undefined,
-          mode: 'cloud',
-        });
+        if (localSess?.mode === 'cloud') {
+          localStorage.removeItem(AUTH_SESSION_KEY);
+        }
+        return null;
+      }
+
+      let activeSession = data.session;
+      if (activeSession) {
+        const expiresAtMs =
+          typeof activeSession.expires_at === 'number'
+            ? activeSession.expires_at * 1000
+            : undefined;
+        // Refresh token proactively if expired or expiring within 60 seconds
+        if (expiresAtMs !== undefined && expiresAtMs <= Date.now() + 60_000) {
+          const { data: refreshed, error: refreshErr } = await supabase.auth.refreshSession();
+          if (refreshErr || !refreshed.session?.user) {
+            if (isCloudNetworkUnavailableError(refreshErr) && localSess && expiresAtMs > Date.now()) {
+              return localSess;
+            }
+            localStorage.removeItem(AUTH_SESSION_KEY);
+            try {
+              await supabase.auth.signOut();
+            } catch {
+              // ignore signOut failure
+            }
+            return null;
+          }
+          activeSession = refreshed.session;
+        }
+
+        const supaUser = activeSession.user;
+        if (supaUser) {
+          await applyPendingCloudProfileBootstrap(supaUser);
+          const link = getAccountLinkByCloudUserId(supaUser.id);
+          const refreshedExpiresMs =
+            typeof activeSession.expires_at === 'number'
+              ? activeSession.expires_at * 1000
+              : undefined;
+          const usernameFromMeta =
+            (supaUser.user_metadata?.username as string | undefined) ||
+            link?.cloudUsername ||
+            supaUser.email?.split('@')[0] ||
+            'pengguna';
+
+          if (
+            localSess &&
+            localSess.mode === 'cloud' &&
+            localSess.userId === supaUser.id &&
+            localSess.localUserId === link?.localUserId
+          ) {
+            if (refreshedExpiresMs && refreshedExpiresMs > Date.parse(localSess.expiresAt)) {
+              return createSessionRecord({
+                userId: supaUser.id,
+                username: localSess.username || usernameFromMeta,
+                email: supaUser.email ?? localSess.email,
+                mode: 'cloud',
+                localUserId: link?.localUserId,
+                cloudUserId: supaUser.id,
+                expiresAtMs: refreshedExpiresMs,
+              });
+            }
+            return localSess;
+          }
+
+          return createSessionRecord({
+            userId: supaUser.id,
+            username: usernameFromMeta,
+            email: supaUser.email ?? undefined,
+            mode: 'cloud',
+            localUserId: link?.localUserId,
+            cloudUserId: supaUser.id,
+            expiresAtMs: refreshedExpiresMs,
+          });
+        }
+      }
+
+      // Supabase reports no active cloud session: clear stale cloud session marker
+      if (localSess?.mode === 'cloud') {
+        localStorage.removeItem(AUTH_SESSION_KEY);
+        return null;
       }
     } catch {
-      // If offline while cloud configured, preserve local device-bound session if valid
       if (localSess) return localSess;
     }
   }
@@ -485,28 +906,35 @@ export async function registerAccount(input: RegisterInput): Promise<RegisterRes
   }
 
   const pinHash = await hashSecretPBKDF2(input.pin, PIN_PBKDF2_ITERATIONS);
+  const targetMode: AuthProviderMode =
+    input.mode ?? (isSupabaseConfigured && supabase ? 'cloud' : 'local');
 
-  if (isSupabaseConfigured && supabase) {
+  if (targetMode === 'cloud') {
+    if (!isSupabaseConfigured || !supabase) {
+      throw new Error('Mode Cloud Supabase belum dikonfigurasi pada environment ini.');
+    }
+
     const email = input.email?.trim().toLowerCase();
     if (!email || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
-      throw new Error('Email valid diperlukan untuk pembuatan akun Cloud Supabase & pemulihan password.');
+      throw new Error(
+        'Email valid diperlukan untuk pembuatan akun Cloud Supabase & pemulihan password.'
+      );
     }
 
     const { data: availData, error: availErr } = await supabase.functions.invoke('username-auth', {
       body: { action: 'check_username', username: normalized },
     });
     if (availErr) {
-      const status =
-        typeof (availErr as { context?: { status?: number } }).context?.status === 'number'
-          ? (availErr as { context: { status: number } }).context.status
-          : undefined;
+      const status = extractHttpStatus(availErr);
       if (status === 429) {
-        throw new Error(
-          'Terlalu banyak percobaan verifikasi username. Silakan coba lagi beberapa saat lagi.'
+        throw new CloudAuthError(
+          'Terlalu banyak percobaan verifikasi username. Silakan coba lagi beberapa saat lagi.',
+          'RATE_LIMITED'
         );
       }
-      throw new Error(
-        'Layanan verifikasi username sedang tidak tersedia. Pendaftaran akun cloud tidak dapat dilanjutkan saat ini.'
+      throw new CloudAuthError(
+        'Layanan verifikasi username sedang tidak tersedia. Pendaftaran akun cloud tidak dapat dilanjutkan saat ini.',
+        'CLOUD_UNAVAILABLE'
       );
     }
     if (!availData || typeof availData.available !== 'boolean') {
@@ -527,12 +955,65 @@ export async function registerAccount(input: RegisterInput): Promise<RegisterRes
         data: { username: displayUsername },
       },
     });
-    if (error) throw new Error(error.message);
+    if (error) {
+      if (/already registered|user already exists/i.test(error.message)) {
+        throw new CloudAuthError(
+          'Email ini sudah terdaftar pada Cloud Supabase. Silakan masuk atau gunakan pemulihan password.',
+          'ACCOUNT_EXISTS'
+        );
+      }
+      throw new Error(error.message);
+    }
     if (!data.user) throw new Error('Pendaftaran akun gagal diproses oleh Supabase.');
 
-    const userId = data.user.id;
-    migrateLegacyLocalStateToUser(userId);
-    const currentState = loadLocalState(userId);
+    // Supabase obfuscates duplicate emails during signup by returning identities = [] with no session
+    const userWithIdentities = data.user as { id: string; identities?: unknown[] };
+    if (Array.isArray(userWithIdentities.identities) && userWithIdentities.identities.length === 0) {
+      throw new CloudAuthError(
+        'Email ini sudah terdaftar pada Cloud Supabase. Silakan masuk atau gunakan pemulihan password.',
+        'ACCOUNT_EXISTS'
+      );
+    }
+
+    const cloudUserId = data.user.id;
+    const nowISO = new Date().toISOString();
+
+    if (!data.session) {
+      // Email verification required: DO NOT create active AuthSession or overwrite localStorage yet!
+      savePendingCloudProfileSetup({
+        userId: cloudUserId,
+        username: displayUsername,
+        fullName: displayUsername,
+        email,
+        pinHash,
+        createdAt: nowISO,
+      });
+
+      return {
+        session: null,
+        user: {
+          userId: cloudUserId,
+          cloudUserId,
+          username: displayUsername,
+          email,
+          mode: 'cloud',
+          isLinked: false,
+          pinConfigured: true,
+          pinEnabled: true,
+          requirePinOnReopen: true,
+          autoLockMinutes: 5,
+          createdAt: nowISO,
+          updatedAt: nowISO,
+        },
+        recoveryKey: null,
+        requiresEmailVerification: true,
+      };
+    }
+
+    if (!hasAnyRegisteredLocalUser() && listAccountLinks().length === 0) {
+      migrateLegacyLocalStateToUser(cloudUserId);
+    }
+    const currentState = loadLocalState(cloudUserId);
     const updatedState = {
       ...currentState,
       settings: {
@@ -549,55 +1030,64 @@ export async function registerAccount(input: RegisterInput): Promise<RegisterRes
         autoLockMinutes: 5,
       },
     };
-    saveLocalState(updatedState, userId);
+    saveLocalState(updatedState, cloudUserId);
 
-    if (data.session) {
-      await supabase.from('profiles').upsert({
-        id: userId,
-        full_name: updatedState.settings.fullName,
-        username: displayUsername,
-        recovery_email: email,
-        security_pin_hash: pinHash,
-        pin_enabled: true,
-        require_pin_on_reopen: true,
-        auto_lock_minutes: 5,
-      });
+    const { error: profileErr } = await supabase.from('profiles').upsert({
+      id: cloudUserId,
+      full_name: updatedState.settings.fullName,
+      username: displayUsername,
+      recovery_email: email,
+      security_pin_hash: pinHash,
+      pin_enabled: true,
+      require_pin_on_reopen: true,
+      auto_lock_minutes: 5,
+    });
+    if (profileErr) {
+      throw new Error(`Akun dibuat, tetapi gagal menyimpan profil cloud: ${profileErr.message}`);
     }
 
+    const sessionExpiresMs =
+      typeof data.session.expires_at === 'number' ? data.session.expires_at * 1000 : undefined;
     const session = createSessionRecord({
-      userId,
+      userId: cloudUserId,
+      cloudUserId,
       username: displayUsername,
       email,
       mode: 'cloud',
+      expiresAtMs: sessionExpiresMs,
     });
 
     return {
       session,
       user: {
-        userId,
+        userId: cloudUserId,
+        cloudUserId,
         username: displayUsername,
         email,
         mode: 'cloud',
+        isLinked: false,
         pinConfigured: true,
         pinEnabled: true,
         requirePinOnReopen: true,
         autoLockMinutes: 5,
-        createdAt: new Date().toISOString(),
-        updatedAt: new Date().toISOString(),
+        createdAt: nowISO,
+        updatedAt: nowISO,
       },
       recoveryKey: null,
-      requiresEmailVerification: !data.session,
+      requiresEmailVerification: false,
     };
   }
 
   // Local Offline-First Mode
   const users = readLocalUsers();
   if (users.some((u) => u.username === normalized)) {
-    throw new Error(`Username "${displayUsername}" sudah terdaftar. Pilih username lain atau silakan login.`);
+    throw new Error(
+      `Username "${displayUsername}" sudah terdaftar. Pilih username lain atau silakan login.`
+    );
   }
 
   const userId = `usr-${generateId()}`;
-  const isFirstLocalUser = users.length === 0;
+  const isFirstLocalUser = users.length === 0 && listAccountLinks().length === 0;
   if (isFirstLocalUser) {
     migrateLegacyLocalStateToUser(userId);
   }
@@ -649,6 +1139,7 @@ export async function registerAccount(input: RegisterInput): Promise<RegisterRes
 
   const session = createSessionRecord({
     userId,
+    localUserId: userId,
     username: displayUsername,
     email: newUser.email,
     mode: 'local',
@@ -658,6 +1149,41 @@ export async function registerAccount(input: RegisterInput): Promise<RegisterRes
     session,
     user: toUserSummary(newUser, 'local'),
     recoveryKey,
+  };
+}
+
+async function authenticateLocalCredentials(
+  rawIdentifier: string,
+  password: string,
+  loginGuard: PinGuardState
+): Promise<{ session: AuthSession; user: AuthUserSummary }> {
+  const normalized = normalizeUsername(rawIdentifier);
+  const users = readLocalUsers();
+  const matched = users.find((u) => u.username === normalized);
+  const ok = matched ? await verifySecretPBKDF2(password, matched.passwordHash) : false;
+
+  if (!matched || !ok) {
+    recordFailedLoginAttempt(loginGuard);
+    throw new CloudAuthError(
+      'Username atau password salah. Periksa kembali kredensial Anda.',
+      'INVALID_CREDENTIALS'
+    );
+  }
+
+  clearLoginGuard();
+  const link = getAccountLinkByLocalUserId(matched.userId);
+  const session = createSessionRecord({
+    userId: matched.userId,
+    localUserId: matched.userId,
+    cloudUserId: link?.cloudUserId,
+    username: matched.usernameDisplay || matched.username,
+    email: link?.cloudEmail ?? matched.email,
+    mode: 'local',
+  });
+
+  return {
+    session,
+    user: toUserSummary(matched, 'local'),
   };
 }
 
@@ -676,103 +1202,663 @@ export async function loginWithPassword(input: LoginInput): Promise<{
     throw new Error('Username dan password wajib diisi.');
   }
 
-  if (isSupabaseConfigured && supabase) {
-    let authUser = null;
-    let resolvedUsername: string | undefined;
+  const preferredMode = input.preferredMode ?? 'auto';
+  const isEmailIdentifier = rawIdentifier.includes('@');
 
-    if (!rawIdentifier.includes('@')) {
-      const { data: fnData, error: fnErr } = await supabase.functions.invoke('username-auth', {
+  // Explicit Local Mode or Supabase not configured: strictly local PBKDF2 login
+  if (preferredMode === 'local' || !isSupabaseConfigured || !supabase) {
+    if (isEmailIdentifier) {
+      throw new Error(
+        'Login dengan email memerlukan koneksi Cloud Supabase. Gunakan username akun lokal Anda untuk masuk secara offline.'
+      );
+    }
+    return authenticateLocalCredentials(rawIdentifier, input.password, loginGuard);
+  }
+
+  let authUser: { id: string; email?: string | null; user_metadata?: Record<string, unknown> } | null =
+    null;
+  let resolvedUsername: string | undefined;
+  let expiresAtMs: number | undefined;
+
+  if (!isEmailIdentifier) {
+    const normalized = normalizeUsername(rawIdentifier);
+    const localUsers = readLocalUsers();
+    const matchedLocal = localUsers.find((u) => u.username === normalized);
+
+    let invokeResult: { data: Record<string, unknown> | null; error: unknown };
+    try {
+      const res = await supabase.functions.invoke('username-auth', {
         body: {
           action: 'login',
-          username: normalizeUsername(rawIdentifier),
+          username: normalized,
           password: input.password,
         },
       });
-      if (fnErr || !fnData?.access_token || !fnData?.refresh_token) {
-        const status =
-          typeof (fnErr as { context?: { status?: number } } | null)?.context?.status === 'number'
-            ? (fnErr as { context: { status: number } }).context.status
-            : undefined;
-        const nextFails = loginGuard.failedAttempts + 1;
-        const lockMs = nextFails >= 8 ? 120_000 : nextFails >= 5 ? 30_000 : 0;
-        saveLoginGuard({
-          failedAttempts: nextFails,
-          lockedUntil: lockMs > 0 ? Date.now() + lockMs : null,
-        });
-        if (status === 429) {
-          throw new Error('Terlalu banyak percobaan login. Silakan coba lagi beberapa saat lagi.');
-        }
-        throw new Error('Username atau password tidak sesuai.');
-      }
-
-      const { data: sessionData, error: setSessionErr } = await supabase.auth.setSession({
-        access_token: fnData.access_token,
-        refresh_token: fnData.refresh_token,
-      });
-      if (setSessionErr || !sessionData.user) {
-        throw new Error('Gagal membangun sesi autentikasi cloud.');
-      }
-      authUser = sessionData.user;
-      resolvedUsername = fnData.user?.username;
-    } else {
-      const { data, error } = await supabase.auth.signInWithPassword({
-        email: rawIdentifier,
-        password: input.password,
-      });
-      if (error || !data.user) {
-        const nextFails = loginGuard.failedAttempts + 1;
-        const lockMs = nextFails >= 8 ? 120_000 : nextFails >= 5 ? 30_000 : 0;
-        saveLoginGuard({
-          failedAttempts: nextFails,
-          lockedUntil: lockMs > 0 ? Date.now() + lockMs : null,
-        });
-        throw new Error('Username atau password tidak sesuai.');
-      }
-      authUser = data.user;
+      invokeResult = { data: res.data as Record<string, unknown> | null, error: res.error };
+    } catch (networkErr) {
+      invokeResult = { data: null, error: networkErr };
     }
 
-    clearLoginGuard();
-    const displayUsername =
-      resolvedUsername ||
-      (authUser.user_metadata?.username as string | undefined) ||
-      (rawIdentifier.includes('@') ? rawIdentifier.split('@')[0] : rawIdentifier);
-    const session = createSessionRecord({
-      userId: authUser.id,
-      username: displayUsername,
-      email: authUser.email ?? (rawIdentifier.includes('@') ? rawIdentifier : undefined),
-      mode: 'cloud',
-    });
-    const summary = getUserSummaryForSession(session)!;
-    return { session, user: summary };
-  }
+    const { data: fnData, error: fnErr } = invokeResult;
 
-  // Local Mode
-  const normalized = normalizeUsername(rawIdentifier);
-  const users = readLocalUsers();
-  const matched = users.find((u) => u.username === normalized);
-  const ok = matched ? await verifySecretPBKDF2(input.password, matched.passwordHash) : false;
+    if (fnErr || !fnData?.access_token || !fnData?.refresh_token) {
+      const status = extractHttpStatus(fnErr);
 
-  if (!matched || !ok) {
-    const nextFails = loginGuard.failedAttempts + 1;
-    const lockMs = nextFails >= 8 ? 120_000 : nextFails >= 5 ? 30_000 : 0;
-    saveLoginGuard({
-      failedAttempts: nextFails,
-      lockedUntil: lockMs > 0 ? Date.now() + lockMs : null,
+      if (status === 429) {
+        recordFailedLoginAttempt(loginGuard);
+        throw new CloudAuthError(
+          'Terlalu banyak percobaan login. Silakan coba lagi beberapa saat lagi.',
+          'RATE_LIMITED'
+        );
+      }
+
+      if (status === 403 || isEmailNotConfirmedError(fnErr, fnData)) {
+        throw new CloudAuthError(
+          'Email akun Anda belum diverifikasi. Silakan periksa kotak masuk email untuk tautan verifikasi sebelum masuk.',
+          'EMAIL_NOT_CONFIRMED'
+        );
+      }
+
+      // Network / Edge unavailability: fallback cleanly for existing local users so offline access works
+      if (isCloudNetworkUnavailableError(fnErr) || (fnErr && status === undefined)) {
+        if (matchedLocal) {
+          return authenticateLocalCredentials(rawIdentifier, input.password, loginGuard);
+        }
+        throw new CloudAuthError(
+          'Layanan autentikasi cloud sedang tidak tersedia atau perangkat offline.',
+          'CLOUD_UNAVAILABLE'
+        );
+      }
+
+      // Old unlinked local user on this device when Supabase is enabled: allow local login ONLY for their unlinked local account
+      if (matchedLocal && !getAccountLinkByLocalUserId(matchedLocal.userId)) {
+        return authenticateLocalCredentials(rawIdentifier, input.password, loginGuard);
+      }
+
+      recordFailedLoginAttempt(loginGuard);
+      throw new CloudAuthError('Username atau password tidak sesuai.', 'INVALID_CREDENTIALS');
+    }
+
+    const { data: sessionData, error: setSessionErr } = await supabase.auth.setSession({
+      access_token: String(fnData.access_token),
+      refresh_token: String(fnData.refresh_token),
     });
-    throw new Error('Username atau password salah. Periksa kembali kredensial Anda.');
+    if (setSessionErr || !sessionData.user) {
+      throw new Error('Gagal membangun sesi autentikasi cloud.');
+    }
+    authUser = sessionData.user;
+    expiresAtMs =
+      typeof sessionData.session?.expires_at === 'number'
+        ? sessionData.session.expires_at * 1000
+        : undefined;
+    const fnUser = fnData.user as { username?: string } | undefined;
+    resolvedUsername = fnUser?.username;
+  } else {
+    const normalizedEmail = rawIdentifier.toLowerCase();
+    let signInResult: Awaited<ReturnType<typeof supabase.auth.signInWithPassword>>;
+    try {
+      signInResult = await supabase.auth.signInWithPassword({
+        email: normalizedEmail,
+        password: input.password,
+      });
+    } catch {
+      throw new CloudAuthError(
+        'Tidak dapat terhubung ke server Supabase. Periksa koneksi internet Anda.',
+        'CLOUD_UNAVAILABLE'
+      );
+    }
+
+    const { data, error } = signInResult;
+    if (error || !data.user) {
+      if (isEmailNotConfirmedError(error)) {
+        throw new CloudAuthError(
+          'Email akun Anda belum diverifikasi. Silakan periksa kotak masuk email untuk tautan verifikasi sebelum masuk.',
+          'EMAIL_NOT_CONFIRMED'
+        );
+      }
+      if (isCloudNetworkUnavailableError(error)) {
+        throw new CloudAuthError(
+          'Server autentikasi cloud tidak dapat dijangkau. Coba lagi saat koneksi tersedia.',
+          'CLOUD_UNAVAILABLE'
+        );
+      }
+      recordFailedLoginAttempt(loginGuard);
+      throw new CloudAuthError('Username atau password tidak sesuai.', 'INVALID_CREDENTIALS');
+    }
+
+    authUser = data.user;
+    expiresAtMs =
+      typeof data.session?.expires_at === 'number' ? data.session.expires_at * 1000 : undefined;
   }
 
   clearLoginGuard();
+  await applyPendingCloudProfileBootstrap(authUser);
+
+  const link = getAccountLinkByCloudUserId(authUser.id);
+  const displayUsername =
+    resolvedUsername ||
+    (authUser.user_metadata?.username as string | undefined) ||
+    link?.cloudUsername ||
+    (isEmailIdentifier ? rawIdentifier.split('@')[0] : rawIdentifier);
+
   const session = createSessionRecord({
-    userId: matched.userId,
-    username: matched.usernameDisplay || matched.username,
-    email: matched.email,
-    mode: 'local',
+    userId: authUser.id,
+    cloudUserId: authUser.id,
+    localUserId: link?.localUserId,
+    username: displayUsername,
+    email: authUser.email ?? (isEmailIdentifier ? rawIdentifier.toLowerCase() : undefined),
+    mode: 'cloud',
+    expiresAtMs,
+  });
+  const summary = getUserSummaryForSession(session)!;
+  return { session, user: summary };
+}
+
+/**
+ * Explicitly links an authenticated Local account (`usr-...`) to an existing Supabase Cloud
+ * account (`auth.uid()`). Requires proving ownership of the target Supabase account via credentials.
+ * - Idempotent when linking the same `(localUserId, cloudUserId)` pair.
+ * - Fails safely without altering local FinanceState, activeUserId, or merging separate accounts.
+ */
+export async function linkLocalAccountToExistingCloud(
+  session: AuthSession,
+  input: { identifier: string; password: string }
+): Promise<LinkAccountResult> {
+  if (!isSupabaseConfigured || !supabase) {
+    throw new CloudAuthError(
+      'Mode Cloud Supabase belum dikonfigurasi pada environment ini.',
+      'CLOUD_UNAVAILABLE'
+    );
+  }
+
+  const localUserId = session.localUserId || session.userId;
+  const users = readLocalUsers();
+  const localUser = users.find((u) => u.userId === localUserId);
+  if (!localUser) {
+    throw new Error('Akun lokal aktif tidak ditemukan pada perangkat ini.');
+  }
+
+  const rawIdentifier = input.identifier.trim();
+  if (!rawIdentifier || !input.password) {
+    throw new Error('Username/email cloud dan password wajib diisi untuk menautkan akun.');
+  }
+
+  const existingLocalLink = getAccountLinkByLocalUserId(localUserId);
+
+  let authUser: { id: string; email?: string | null; user_metadata?: Record<string, unknown> } | null =
+    null;
+  let expiresAtMs: number | undefined;
+  let resolvedCloudUsername: string | undefined;
+
+  if (!rawIdentifier.includes('@')) {
+    const normalized = normalizeUsername(rawIdentifier);
+    let fnRes: { data: Record<string, unknown> | null; error: unknown };
+    try {
+      const res = await supabase.functions.invoke('username-auth', {
+        body: { action: 'login', username: normalized, password: input.password },
+      });
+      fnRes = { data: res.data as Record<string, unknown> | null, error: res.error };
+    } catch {
+      throw new CloudAuthError(
+        'Tidak dapat menjangkau layanan autentikasi Supabase. Data lokal Anda tetap aman.',
+        'CLOUD_UNAVAILABLE'
+      );
+    }
+
+    if (fnRes.error || !fnRes.data?.access_token || !fnRes.data?.refresh_token) {
+      const status = extractHttpStatus(fnRes.error);
+      if (status === 429) {
+        throw new CloudAuthError(
+          'Terlalu banyak percobaan autentikasi. Silakan coba lagi nanti.',
+          'RATE_LIMITED'
+        );
+      }
+      if (status === 403 || isEmailNotConfirmedError(fnRes.error, fnRes.data)) {
+        throw new CloudAuthError(
+          'Email akun cloud belum diverifikasi. Verifikasi email terlebih dahulu sebelum menautkan.',
+          'EMAIL_NOT_CONFIRMED'
+        );
+      }
+      if (isCloudNetworkUnavailableError(fnRes.error) || status === undefined) {
+        throw new CloudAuthError(
+          'Layanan cloud tidak tersedia. Data lokal Anda tetap utuh dan tidak berubah.',
+          'CLOUD_UNAVAILABLE'
+        );
+      }
+      throw new CloudAuthError('Kredensial akun cloud tidak sesuai.', 'INVALID_CREDENTIALS');
+    }
+
+    const { data: sessionData, error: setErr } = await supabase.auth.setSession({
+      access_token: String(fnRes.data.access_token),
+      refresh_token: String(fnRes.data.refresh_token),
+    });
+    if (setErr || !sessionData.user) {
+      throw new Error('Gagal memverifikasi sesi cloud.');
+    }
+    authUser = sessionData.user;
+    expiresAtMs =
+      typeof sessionData.session?.expires_at === 'number'
+        ? sessionData.session.expires_at * 1000
+        : undefined;
+    resolvedCloudUsername = (fnRes.data.user as { username?: string } | undefined)?.username;
+  } else {
+    let signInRes: Awaited<ReturnType<typeof supabase.auth.signInWithPassword>>;
+    try {
+      signInRes = await supabase.auth.signInWithPassword({
+        email: rawIdentifier.toLowerCase(),
+        password: input.password,
+      });
+    } catch {
+      throw new CloudAuthError(
+        'Koneksi ke Supabase gagal. Data lokal Anda tetap aman dan belum berubah.',
+        'CLOUD_UNAVAILABLE'
+      );
+    }
+    if (signInRes.error || !signInRes.data.user) {
+      if (isEmailNotConfirmedError(signInRes.error)) {
+        throw new CloudAuthError(
+          'Email akun cloud belum diverifikasi. Verifikasi email terlebih dahulu sebelum menautkan.',
+          'EMAIL_NOT_CONFIRMED'
+        );
+      }
+      if (isCloudNetworkUnavailableError(signInRes.error)) {
+        throw new CloudAuthError(
+          'Server cloud tidak dapat dijangkau. Data lokal Anda tetap utuh.',
+          'CLOUD_UNAVAILABLE'
+        );
+      }
+      throw new CloudAuthError('Email atau password cloud tidak sesuai.', 'INVALID_CREDENTIALS');
+    }
+    authUser = signInRes.data.user;
+    expiresAtMs =
+      typeof signInRes.data.session?.expires_at === 'number'
+        ? signInRes.data.session.expires_at * 1000
+        : undefined;
+  }
+
+  const cloudUserId = authUser.id;
+  if (!isValidUUID(cloudUserId)) {
+    throw new Error('Identitas Supabase auth.uid() tidak valid.');
+  }
+
+  const abortMismatchedCloudSession = async () => {
+    try {
+      await supabase!.auth.signOut();
+    } catch {
+      // ignore offline signOut failure
+    }
+  };
+
+  // Prevent re-linking local account to a DIFFERENT cloud identity
+  if (existingLocalLink && existingLocalLink.cloudUserId.toLowerCase() !== cloudUserId.toLowerCase()) {
+    await abortMismatchedCloudSession();
+    throw new CloudAuthError(
+      'Akun lokal ini sudah tertaut ke identitas cloud lain. Penautan silang ditolak untuk menjaga isolasi data.',
+      'LINK_CONFLICT'
+    );
+  }
+
+  // Prevent linking one cloud identity to MULTIPLE local accounts
+  const existingCloudLink = getAccountLinkByCloudUserId(cloudUserId);
+  if (existingCloudLink && existingCloudLink.localUserId !== localUserId) {
+    await abortMismatchedCloudSession();
+    throw new CloudAuthError(
+      'Akun Cloud Supabase ini sudah tertaut ke akun lokal lain. Satu identitas cloud tidak boleh tertaut ke lebih dari satu akun lokal tanpa pemisahan eksplisit.',
+      'LINK_CONFLICT'
+    );
+  }
+
+  // Prevent silently eclipsing separate local data that already exists under cloudUserId
+  if (!existingLocalLink && hasMeaningfulLocalFinanceData(cloudUserId)) {
+    await abortMismatchedCloudSession();
+    throw new CloudAuthError(
+      'Akun Cloud ini sudah memiliki data keuangan lokal terpisah di perangkat ini. Penggabungan otomatis dua akun dinonaktifkan untuk mencegah pencampuran data.',
+      'LINK_CONFLICT'
+    );
+  }
+
+  // Check / create profile safely without overwriting an existing different cloud profile username
+  let finalCloudUsername =
+    resolvedCloudUsername ||
+    (authUser.user_metadata?.username as string | undefined) ||
+    localUser.usernameDisplay;
+  try {
+    const { data: existingProfile } = await supabase
+      .from('profiles')
+      .select('id, username, full_name')
+      .eq('id', cloudUserId)
+      .maybeSingle();
+
+    if (existingProfile) {
+      if (existingProfile.username) {
+        finalCloudUsername = existingProfile.username;
+      }
+    } else {
+      const localState = loadLocalState(localUserId);
+      const { error: upsertErr } = await supabase.from('profiles').upsert({
+        id: cloudUserId,
+        full_name: localState.settings.fullName || localUser.usernameDisplay,
+        username: USERNAME_VALIDATION_REGEX.test(localUser.usernameDisplay)
+          ? localUser.usernameDisplay
+          : null,
+        recovery_email: authUser.email ?? null,
+        security_pin_hash: localUser.pinHash ?? localState.settings.securityPinHash ?? null,
+        pin_enabled: localUser.pinEnabled,
+        require_pin_on_reopen: localUser.requirePinOnReopen,
+        auto_lock_minutes: localUser.autoLockMinutes,
+      });
+      if (upsertErr) {
+        await abortMismatchedCloudSession();
+        throw new Error(`Gagal menyiapkan profil cloud: ${upsertErr.message}`);
+      }
+    }
+  } catch (err) {
+    if (err instanceof CloudAuthError) throw err;
+    if (err instanceof Error && err.message.startsWith('Gagal menyiapkan profil cloud')) {
+      throw err;
+    }
+  }
+
+  const nowISO = new Date().toISOString();
+  const alreadyLinked = Boolean(
+    existingLocalLink && existingLocalLink.cloudUserId.toLowerCase() === cloudUserId.toLowerCase()
+  );
+
+  const linkRecord: AccountLinkRecord = {
+    localUserId,
+    cloudUserId,
+    cloudEmail: authUser.email ?? existingLocalLink?.cloudEmail,
+    cloudUsername: finalCloudUsername,
+    linkedAt: existingLocalLink?.linkedAt ?? nowISO,
+    updatedAt: nowISO,
+    status: 'linked',
+  };
+
+  const links = listAccountLinks();
+  const nextLinks = alreadyLinked
+    ? links.map((l) => (l.localUserId === localUserId ? linkRecord : l))
+    : [...links, linkRecord];
+  writeAccountLinks(nextLinks);
+
+  writeLocalUsers(
+    users.map((u) =>
+      u.userId === localUserId
+        ? {
+            ...u,
+            linkedCloudUserId: cloudUserId,
+            linkedCloudEmail: linkRecord.cloudEmail ?? u.linkedCloudEmail,
+            email: linkRecord.cloudEmail ?? u.email,
+            updatedAt: nowISO,
+          }
+        : u
+    )
+  );
+
+  const nextSession = createSessionRecord({
+    userId: cloudUserId,
+    cloudUserId,
+    localUserId,
+    username: finalCloudUsername || localUser.usernameDisplay,
+    email: linkRecord.cloudEmail,
+    mode: 'cloud',
+    expiresAtMs,
+  });
+
+  const nextUser = getUserSummaryForSession(nextSession)!;
+  return {
+    link: linkRecord,
+    session: nextSession,
+    user: nextUser,
+    alreadyLinked,
+  };
+}
+
+/**
+ * Registers a brand new Supabase Cloud account from an unlinked local account and links it
+ * atomically once verified. If email verification is required, keeps the local session intact
+ * until the user confirms email and completes linking via `linkLocalAccountToExistingCloud`.
+ */
+export async function registerAndLinkCloudAccount(
+  session: AuthSession,
+  input: {
+    username: string;
+    email: string;
+    password: string;
+    confirmPassword: string;
+  }
+): Promise<RegisterAndLinkResult> {
+  if (!isSupabaseConfigured || !supabase) {
+    throw new CloudAuthError(
+      'Mode Cloud Supabase belum dikonfigurasi pada environment ini.',
+      'CLOUD_UNAVAILABLE'
+    );
+  }
+
+  const localUserId = session.localUserId || session.userId;
+  const users = readLocalUsers();
+  const localUser = users.find((u) => u.userId === localUserId);
+  if (!localUser) {
+    throw new Error('Akun lokal aktif tidak ditemukan.');
+  }
+  const existingLink = getAccountLinkByLocalUserId(localUserId);
+  if (existingLink) {
+    throw new CloudAuthError(
+      'Akun lokal ini sudah tertaut ke akun Cloud Supabase.',
+      'LINK_CONFLICT'
+    );
+  }
+
+  const usernameErr = validateUsername(input.username);
+  if (usernameErr) throw new Error(usernameErr);
+  const normalized = normalizeUsername(input.username);
+  const displayUsername = input.username.trim();
+
+  const email = input.email.trim().toLowerCase();
+  if (!email || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+    throw new Error('Masukkan alamat email yang valid.');
+  }
+
+  const pwdCheck = evaluatePasswordStrength(input.password);
+  if (!pwdCheck.valid) {
+    throw new Error(`Password belum memenuhi standar keamanan: ${pwdCheck.errors.join(' ')}`);
+  }
+  if (input.password !== input.confirmPassword) {
+    throw new Error('Konfirmasi password tidak cocok.');
+  }
+
+  const { data: availData, error: availErr } = await supabase.functions.invoke('username-auth', {
+    body: { action: 'check_username', username: normalized },
+  });
+  if (availErr) {
+    const status = extractHttpStatus(availErr);
+    if (status === 429) {
+      throw new CloudAuthError('Terlalu banyak permintaan. Coba lagi nanti.', 'RATE_LIMITED');
+    }
+    throw new CloudAuthError(
+      'Layanan verifikasi username cloud sedang tidak tersedia. Data lokal Anda tetap aman.',
+      'CLOUD_UNAVAILABLE'
+    );
+  }
+  if (!availData || availData.available !== true) {
+    throw new Error('Username cloud tidak tersedia atau sudah dipakai akun lain.');
+  }
+
+  const { data, error } = await supabase.auth.signUp({
+    email,
+    password: input.password,
+    options: { data: { username: displayUsername } },
+  });
+  if (error) throw new Error(error.message);
+  if (!data.user) throw new Error('Gagal membuat akun Cloud Supabase.');
+
+  const userWithIdentities = data.user as { id: string; identities?: unknown[] };
+  if (Array.isArray(userWithIdentities.identities) && userWithIdentities.identities.length === 0) {
+    throw new CloudAuthError(
+      'Email ini sudah terdaftar di Supabase. Gunakan opsi "Tautkan ke Akun Cloud yang Sudah Ada".',
+      'ACCOUNT_EXISTS'
+    );
+  }
+
+  if (!data.session) {
+    return {
+      linked: false,
+      requiresEmailVerification: true,
+      session,
+      user: toUserSummary(localUser, 'local'),
+    };
+  }
+
+  const cloudUserId = data.user.id;
+  const localState = loadLocalState(localUserId);
+  const { error: profileErr } = await supabase.from('profiles').upsert({
+    id: cloudUserId,
+    full_name: localState.settings.fullName || displayUsername,
+    username: displayUsername,
+    recovery_email: email,
+    security_pin_hash: localUser.pinHash ?? localState.settings.securityPinHash ?? null,
+    pin_enabled: localUser.pinEnabled,
+    require_pin_on_reopen: localUser.requirePinOnReopen,
+    auto_lock_minutes: localUser.autoLockMinutes,
+  });
+  if (profileErr) {
+    throw new Error(`Akun cloud terbuat, tetapi gagal menyimpan profil: ${profileErr.message}`);
+  }
+
+  const nowISO = new Date().toISOString();
+  const linkRecord: AccountLinkRecord = {
+    localUserId,
+    cloudUserId,
+    cloudEmail: email,
+    cloudUsername: displayUsername,
+    linkedAt: nowISO,
+    updatedAt: nowISO,
+    status: 'linked',
+  };
+  writeAccountLinks([...listAccountLinks(), linkRecord]);
+  writeLocalUsers(
+    users.map((u) =>
+      u.userId === localUserId
+        ? {
+            ...u,
+            linkedCloudUserId: cloudUserId,
+            linkedCloudEmail: email,
+            email: u.email ?? email,
+            updatedAt: nowISO,
+          }
+        : u
+    )
+  );
+
+  const expiresAtMs =
+    typeof data.session.expires_at === 'number' ? data.session.expires_at * 1000 : undefined;
+  const nextSession = createSessionRecord({
+    userId: cloudUserId,
+    cloudUserId,
+    localUserId,
+    username: displayUsername,
+    email,
+    mode: 'cloud',
+    expiresAtMs,
   });
 
   return {
-    session,
-    user: toUserSummary(matched, 'local'),
+    linked: true,
+    requiresEmailVerification: false,
+    link: linkRecord,
+    session: nextSession,
+    user: getUserSummaryForSession(nextSession)!,
+  };
+}
+
+export async function resendCloudVerificationEmail(email: string): Promise<void> {
+  if (!isSupabaseConfigured || !supabase) {
+    throw new CloudAuthError(
+      'Mode Cloud Supabase belum dikonfigurasi.',
+      'CLOUD_UNAVAILABLE'
+    );
+  }
+  const normalized = email.trim().toLowerCase();
+  if (!normalized || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(normalized)) {
+    throw new Error('Masukkan alamat email yang valid untuk mengirim ulang verifikasi.');
+  }
+  const redirectTo = typeof window !== 'undefined' ? window.location.origin : undefined;
+  const { error } = await supabase.auth.resend({
+    type: 'signup',
+    email: normalized,
+    options: redirectTo ? { emailRedirectTo: redirectTo } : undefined,
+  });
+  if (error) throw new Error(error.message);
+}
+
+export async function completeCloudPasswordReset(
+  newPassword: string,
+  confirmPassword: string
+): Promise<void> {
+  if (!isSupabaseConfigured || !supabase) {
+    throw new CloudAuthError('Mode Cloud Supabase belum dikonfigurasi.', 'CLOUD_UNAVAILABLE');
+  }
+  const pwdCheck = evaluatePasswordStrength(newPassword);
+  if (!pwdCheck.valid) {
+    throw new Error(`Password baru belum memenuhi standar keamanan: ${pwdCheck.errors.join(' ')}`);
+  }
+  if (newPassword !== confirmPassword) {
+    throw new Error('Konfirmasi password baru tidak cocok.');
+  }
+  const { error } = await supabase.auth.updateUser({ password: newPassword });
+  if (error) throw new Error(error.message);
+}
+
+export function subscribeCloudAuthChanges(handlers: {
+  onTokenRefreshed?: (session: AuthSession) => void;
+  onSignedOut?: () => void;
+  onPasswordRecovery?: () => void;
+}): () => void {
+  if (!isSupabaseConfigured || !supabase) {
+    return () => {};
+  }
+
+  const { data: listener } = supabase.auth.onAuthStateChange((event, supaSession) => {
+    if (event === 'PASSWORD_RECOVERY') {
+      handlers.onPasswordRecovery?.();
+      return;
+    }
+
+    const currentLocal = getStoredSession();
+    if (event === 'SIGNED_OUT') {
+      if (currentLocal?.mode === 'cloud') {
+        localStorage.removeItem(AUTH_SESSION_KEY);
+        handlers.onSignedOut?.();
+      }
+      return;
+    }
+
+    if (event === 'TOKEN_REFRESHED' && supaSession?.user) {
+      // Never hijack an explicit local session
+      if (currentLocal?.mode === 'local') return;
+      const u = supaSession.user;
+      const link = getAccountLinkByCloudUserId(u.id);
+      const expiresAtMs =
+        typeof supaSession.expires_at === 'number' ? supaSession.expires_at * 1000 : undefined;
+      const updated = createSessionRecord({
+        userId: u.id,
+        cloudUserId: u.id,
+        localUserId: link?.localUserId,
+        username:
+          currentLocal?.username ||
+          (u.user_metadata?.username as string | undefined) ||
+          link?.cloudUsername ||
+          u.email?.split('@')[0] ||
+          'pengguna',
+        email: u.email ?? currentLocal?.email,
+        mode: 'cloud',
+        expiresAtMs,
+      });
+      handlers.onTokenRefreshed?.(updated);
+    }
+  });
+
+  return () => {
+    listener.subscription.unsubscribe();
   };
 }
 
@@ -782,14 +1868,18 @@ export async function logoutSession(): Promise<void> {
     try {
       await supabase.auth.signOut();
     } catch {
-      // ignore offline signOut errors; local session is already cleared
+      // ignore offline signOut errors; local session is already cleared and financial data stays intact
     }
   }
 }
 
-export async function verifyPinCode(session: AuthSession, pin: string): Promise<PinVerificationResult> {
+export async function verifyPinCode(
+  session: AuthSession,
+  pin: string
+): Promise<PinVerificationResult> {
+  const storageId = resolveStorageUserId(session) ?? session.userId;
   const now = Date.now();
-  const guard = getPinGuard(session.userId);
+  const guard = getPinGuard(storageId);
   if (guard.lockedUntil && guard.lockedUntil > now) {
     const remainingSeconds = Math.ceil((guard.lockedUntil - now) / 1000);
     return {
@@ -813,10 +1903,10 @@ export async function verifyPinCode(session: AuthSession, pin: string): Promise<
   let storedHash: string | null = null;
   if (session.mode === 'local') {
     const users = readLocalUsers();
-    const u = users.find((x) => x.userId === session.userId);
+    const u = users.find((x) => x.userId === storageId);
     storedHash = u?.pinHash ?? null;
   } else {
-    const localState = loadLocalState(session.userId);
+    const localState = loadLocalState(storageId);
     storedHash = localState.settings.securityPinHash ?? null;
   }
 
@@ -831,8 +1921,7 @@ export async function verifyPinCode(session: AuthSession, pin: string): Promise<
 
   const ok = await verifySecretPBKDF2(pin, storedHash);
   if (ok) {
-    clearPinGuard(session.userId);
-    // Transparently upgrade legacy SHA-256 hash to PBKDF2 if needed
+    clearPinGuard(storageId);
     if (!storedHash.startsWith('pbkdf2_sha256$')) {
       const upgradedHash = await hashSecretPBKDF2(pin, PIN_PBKDF2_ITERATIONS);
       await persistPinHash(session, upgradedHash, true);
@@ -858,7 +1947,7 @@ export async function verifyPinCode(session: AuthSession, pin: string): Promise<
     failedAttempts: nextFailed,
     lockedUntil: cooldownSec > 0 ? now + cooldownSec * 1000 : null,
   };
-  savePinGuard(session.userId, nextGuard);
+  savePinGuard(storageId, nextGuard);
 
   const message =
     cooldownSec > 0
@@ -879,17 +1968,19 @@ async function persistPinHash(
   pinEnabled: boolean
 ): Promise<void> {
   const nowISO = new Date().toISOString();
-  if (session.mode === 'local') {
+  const storageId = resolveStorageUserId(session) ?? session.userId;
+  const localId = session.localUserId || (session.mode === 'local' ? session.userId : undefined);
+
+  if (localId) {
     const users = readLocalUsers();
     writeLocalUsers(
       users.map((u) =>
-        u.userId === session.userId
-          ? { ...u, pinHash, pinEnabled, updatedAt: nowISO }
-          : u
+        u.userId === localId ? { ...u, pinHash, pinEnabled, updatedAt: nowISO } : u
       )
     );
   }
-  const state = loadLocalState(session.userId);
+
+  const state = loadLocalState(storageId);
   saveLocalState(
     {
       ...state,
@@ -899,33 +1990,48 @@ async function persistPinHash(
         pinEnabled,
       },
     },
-    session.userId
+    storageId
   );
+
   if (session.mode === 'cloud' && isSupabaseConfigured && supabase) {
+    const cloudId = session.cloudUserId || session.userId;
     await supabase
       .from('profiles')
       .update({
         security_pin_hash: pinHash,
         pin_enabled: pinEnabled,
       })
-      .eq('id', session.userId);
+      .eq('id', cloudId);
   }
 }
 
 export async function verifyAccountPassword(session: AuthSession, password: string): Promise<boolean> {
   if (!password) return false;
   if (session.mode === 'local') {
+    const localId = session.localUserId || session.userId;
     const users = readLocalUsers();
-    const u = users.find((x) => x.userId === session.userId);
+    const u = users.find((x) => x.userId === localId);
     if (!u) return false;
     return verifySecretPBKDF2(password, u.passwordHash);
   }
-  if (isSupabaseConfigured && supabase && session.email) {
-    const { error } = await supabase.auth.signInWithPassword({
-      email: session.email,
-      password,
-    });
-    return !error;
+  if (isSupabaseConfigured && supabase) {
+    if (session.email) {
+      const { error } = await supabase.auth.signInWithPassword({
+        email: session.email,
+        password,
+      });
+      return !error;
+    }
+    if (session.username) {
+      const { data, error } = await supabase.functions.invoke('username-auth', {
+        body: {
+          action: 'login',
+          username: normalizeUsername(session.username),
+          password,
+        },
+      });
+      return !error && Boolean(data?.access_token);
+    }
   }
   return false;
 }
@@ -963,7 +2069,8 @@ export async function resetPinWithPassword(
   if (!validPwd) {
     throw new Error('Password akun salah. Verifikasi gagal.');
   }
-  clearPinGuard(session.userId);
+  const storageId = resolveStorageUserId(session) ?? session.userId;
+  clearPinGuard(storageId);
   const hash = await hashSecretPBKDF2(params.newPin, PIN_PBKDF2_ITERATIONS);
   await persistPinHash(session, hash, true);
 }
@@ -980,11 +2087,14 @@ export async function updateSecurityPreferences(
   updates: Partial<SecurityPreferences>
 ): Promise<AuthUserSummary> {
   const nowISO = new Date().toISOString();
-  if (session.mode === 'local') {
+  const storageId = resolveStorageUserId(session) ?? session.userId;
+  const localId = session.localUserId || (session.mode === 'local' ? session.userId : undefined);
+
+  if (localId) {
     const users = readLocalUsers();
     let updatedUser: StoredLocalAuthUser | null = null;
     const nextUsers = users.map((u) => {
-      if (u.userId !== session.userId) return u;
+      if (u.userId !== localId) return u;
       if (updates.pinEnabled && !u.pinHash) {
         throw new Error('Atur PIN 6 digit terlebih dahulu sebelum mengaktifkan kunci PIN.');
       }
@@ -998,10 +2108,10 @@ export async function updateSecurityPreferences(
       };
       return updatedUser;
     });
-    writeLocalUsers(nextUsers);
     if (!updatedUser) throw new Error('Akun pengguna tidak ditemukan.');
+    writeLocalUsers(nextUsers);
 
-    const state = loadLocalState(session.userId);
+    const state = loadLocalState(storageId);
     saveLocalState(
       {
         ...state,
@@ -1012,27 +2122,31 @@ export async function updateSecurityPreferences(
           autoLockMinutes: (updatedUser as StoredLocalAuthUser).autoLockMinutes,
         },
       },
-      session.userId
+      storageId
     );
-    return toUserSummary(updatedUser, 'local');
+    if (session.mode === 'local') {
+      return toUserSummary(updatedUser, 'local');
+    }
   }
 
-  const state = loadLocalState(session.userId);
+  const state = loadLocalState(storageId);
   if (updates.pinEnabled && !state.settings.securityPinHash) {
     throw new Error('Atur PIN 6 digit terlebih dahulu sebelum mengaktifkan kunci PIN.');
   }
   const nextSettings = {
     ...state.settings,
-    pinEnabled: updates.pinEnabled ?? state.settings.pinEnabled ?? Boolean(state.settings.securityPinHash),
+    pinEnabled:
+      updates.pinEnabled ?? state.settings.pinEnabled ?? Boolean(state.settings.securityPinHash),
     requirePinOnReopen: updates.requirePinOnReopen ?? state.settings.requirePinOnReopen ?? true,
     autoLockMinutes:
       updates.autoLockMinutes !== undefined
         ? updates.autoLockMinutes
         : state.settings.autoLockMinutes ?? 5,
   };
-  saveLocalState({ ...state, settings: nextSettings }, session.userId);
+  saveLocalState({ ...state, settings: nextSettings }, storageId);
 
-  if (isSupabaseConfigured && supabase) {
+  if (session.mode === 'cloud' && isSupabaseConfigured && supabase) {
+    const cloudId = session.cloudUserId || session.userId;
     await supabase
       .from('profiles')
       .update({
@@ -1040,7 +2154,7 @@ export async function updateSecurityPreferences(
         require_pin_on_reopen: nextSettings.requirePinOnReopen,
         auto_lock_minutes: nextSettings.autoLockMinutes,
       })
-      .eq('id', session.userId);
+      .eq('id', cloudId);
   }
 
   return getUserSummaryForSession(session)!;
@@ -1114,10 +2228,11 @@ export async function regenerateLocalRecoveryKey(
     newRecoveryKey.toUpperCase(),
     PASSWORD_PBKDF2_ITERATIONS
   );
+  const localId = session.localUserId || session.userId;
   const users = readLocalUsers();
   writeLocalUsers(
     users.map((u) =>
-      u.userId === session.userId
+      u.userId === localId
         ? { ...u, recoveryKeyHash: newRecoveryKeyHash, updatedAt: new Date().toISOString() }
         : u
     )
@@ -1127,7 +2242,10 @@ export async function regenerateLocalRecoveryKey(
 
 export async function requestCloudPasswordReset(usernameOrEmail: string): Promise<void> {
   if (!isSupabaseConfigured || !supabase) {
-    throw new Error('Mode Cloud Supabase belum dikonfigurasi pada environment ini.');
+    throw new CloudAuthError(
+      'Mode Cloud Supabase belum dikonfigurasi pada environment ini.',
+      'CLOUD_UNAVAILABLE'
+    );
   }
   const trimmed = usernameOrEmail.trim();
   if (!trimmed) throw new Error('Masukkan username atau email terdaftar.');
@@ -1135,21 +2253,20 @@ export async function requestCloudPasswordReset(usernameOrEmail: string): Promis
   const redirectTo = typeof window !== 'undefined' ? window.location.origin : undefined;
 
   if (!trimmed.includes('@')) {
+    const normalized = normalizeUsername(trimmed);
     const { error } = await supabase.functions.invoke('username-auth', {
       body: {
         action: 'reset_password',
-        identifier: normalizeUsername(trimmed),
+        identifier: normalized,
         redirectTo,
       },
     });
     if (error) {
-      const status =
-        typeof (error as { context?: { status?: number } }).context?.status === 'number'
-          ? (error as { context: { status: number } }).context.status
-          : undefined;
+      const status = extractHttpStatus(error);
       if (status === 429) {
-        throw new Error(
-          'Terlalu banyak permintaan reset password. Silakan coba lagi beberapa saat lagi.'
+        throw new CloudAuthError(
+          'Terlalu banyak permintaan reset password. Silakan coba lagi beberapa saat lagi.',
+          'RATE_LIMITED'
         );
       }
       throw new Error('Gagal memproses permintaan reset password.');
@@ -1157,8 +2274,21 @@ export async function requestCloudPasswordReset(usernameOrEmail: string): Promis
     return;
   }
 
-  const { error } = await supabase.auth.resetPasswordForEmail(trimmed, {
+  const normalizedEmail = trimmed.toLowerCase();
+  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(normalizedEmail)) {
+    throw new Error('Format email tidak valid.');
+  }
+  const { error } = await supabase.auth.resetPasswordForEmail(normalizedEmail, {
     redirectTo,
   });
-  if (error) throw new Error(error.message);
+  if (error) {
+    const status = extractHttpStatus(error);
+    if (status === 429) {
+      throw new CloudAuthError(
+        'Terlalu banyak permintaan reset password. Silakan coba lagi beberapa saat lagi.',
+        'RATE_LIMITED'
+      );
+    }
+    throw new Error(error.message);
+  }
 }

@@ -35,7 +35,9 @@ import {
   getStoredSession,
   getUserSummaryForSession,
   logoutSession,
+  resolveStorageUserId,
   resolveValidSession,
+  subscribeCloudAuthChanges,
   touchSessionActivity,
 } from './services/authService';
 import { AuthSession, AuthUserSummary, Transaction } from './types/finance';
@@ -55,24 +57,25 @@ export default function App() {
   const [authUser, setAuthUser] = useState<AuthUserSummary | null>(() =>
     getUserSummaryForSession(getStoredSession())
   );
+  const [recoveryMode, setRecoveryMode] = useState(false);
   const [isLocked, setIsLocked] = useState<boolean>(() => {
     const initialSess = getStoredSession();
     const initialUser = getUserSummaryForSession(initialSess);
     return Boolean(initialSess && initialUser?.pinEnabled && initialUser?.requirePinOnReopen);
   });
 
+  const storageUserId = resolveStorageUserId(session);
   const {
     state,
     snapshot,
     commitState,
     resetAllData,
     syncStatus,
-    isSyncing,
     isSupabaseConfigured,
     dismissConflictNotice,
     preferCloudSnapshot,
     canRestoreCloudSnapshot,
-  } = useFinanceStore(session?.userId ?? null);
+  } = useFinanceStore(storageUserId);
 
   const [activeTab, setActiveTab] = useState<NavTab>('dashboard');
   const [txModalOpen, setTxModalOpen] = useState(false);
@@ -89,7 +92,7 @@ export default function App() {
     setAuthUser(getUserSummaryForSession(latestSess));
   }, [session]);
 
-  // Verify session asynchronously (supports Supabase cloud session sync on load)
+  // Verify session asynchronously & subscribe to Supabase auth lifecycle events
   useEffect(() => {
     let active = true;
     resolveValidSession().then((resolved) => {
@@ -101,8 +104,32 @@ export default function App() {
         setIsLocked((prev) => prev || true);
       }
     });
+
+    const unsubscribe = subscribeCloudAuthChanges({
+      onTokenRefreshed: (updatedSession) => {
+        if (!active) return;
+        setSession(updatedSession);
+        setAuthUser(getUserSummaryForSession(updatedSession));
+      },
+      onSignedOut: () => {
+        if (!active) return;
+        setSession(null);
+        setAuthUser(null);
+        setIsLocked(false);
+        setTxModalOpen(false);
+        setSimModalOpen(false);
+        setWizardOpen(false);
+        setActiveTab('dashboard');
+      },
+      onPasswordRecovery: () => {
+        if (!active) return;
+        setRecoveryMode(true);
+      },
+    });
+
     return () => {
       active = false;
+      unsubscribe();
     };
   }, []);
 
@@ -243,14 +270,25 @@ export default function App() {
 
   const currentNav = navItems.find((n) => n.id === activeTab) ?? navItems[0];
 
-  // 1. Primary Authentication Gate (no valid session on this device)
-  if (!session || !authUser) {
+  // 1. Primary Authentication Gate (no valid session on this device) or Password Recovery Completion
+  if (recoveryMode || !session || !authUser) {
     return (
       <>
         <SplashScreen />
         <AuthScreen
           isSupabaseConfigured={isSupabaseConfigured}
+          recoveryMode={recoveryMode}
+          onRecoveryComplete={async () => {
+            setRecoveryMode(false);
+            const resolved = await resolveValidSession();
+            if (resolved) {
+              setSession(resolved);
+              setAuthUser(getUserSummaryForSession(resolved));
+              setIsLocked(false);
+            }
+          }}
           onAuthenticated={({ session: nextSess, user: nextUser }) => {
+            setRecoveryMode(false);
             setSession(nextSess);
             setAuthUser(nextUser);
             setIsLocked(false);
@@ -335,10 +373,12 @@ export default function App() {
             <div className="space-y-0.5">
               <p className="font-semibold text-slate-800 truncate">{authUser.username}</p>
               <p className="truncate text-[11px]">
-                {syncStatus.mode === 'cloud'
-                  ? isSyncing
-                    ? 'Menyinkronkan ke Supabase...'
-                    : 'Sinkronisasi Cloud Aktif'
+                {authUser.mode === 'cloud'
+                  ? authUser.isLinked
+                    ? 'Cloud Auth · Akun Tertaut (Data Lokal)'
+                    : 'Cloud Auth Aktif (Data Lokal)'
+                  : authUser.isLinked
+                  ? 'Mode Lokal Offline (Tertaut Cloud)'
                   : 'Mode Lokal (Offline-First)'}
               </p>
             </div>
@@ -566,6 +606,11 @@ export default function App() {
                 onLockNow={handleLockNow}
                 onLogout={handleLogout}
                 onRefreshAuthUser={refreshAuthUser}
+                onLinkedSession={(nextSess, nextUser) => {
+                  setSession(nextSess);
+                  setAuthUser(nextUser);
+                  lastActivityRef.current = Date.now();
+                }}
               />
             )}
           </main>

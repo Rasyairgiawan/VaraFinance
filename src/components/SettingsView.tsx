@@ -10,6 +10,8 @@ import {
   Eye,
   EyeOff,
   KeyRound,
+  Link2,
+  Loader2,
   Lock,
   LogOut,
   RotateCcw,
@@ -19,7 +21,9 @@ import {
 } from 'lucide-react';
 import {
   changePinWithCurrentPin,
+  linkLocalAccountToExistingCloud,
   regenerateLocalRecoveryKey,
+  registerAndLinkCloudAccount,
   resetPinWithPassword,
   updateSecurityPreferences,
 } from '../services/authService';
@@ -44,13 +48,13 @@ interface SettingsViewProps {
   onLockNow: () => void;
   onLogout: () => void;
   onRefreshAuthUser: () => void;
+  onLinkedSession?: (session: AuthSession, user: AuthUserSummary) => void;
 }
 
 export const SettingsView: React.FC<SettingsViewProps> = ({
   state,
   session,
   authUser,
-  syncStatus,
   isSupabaseConfigured,
   onOpenWizard,
   onRestoreState,
@@ -58,8 +62,21 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
   onLockNow,
   onLogout,
   onRefreshAuthUser,
+  onLinkedSession,
 }) => {
   const [confirmReset, setConfirmReset] = useState(false);
+
+  // Account Linking state (Local -> Cloud Supabase)
+  const [linkTab, setLinkTab] = useState<'existing' | 'new'>('existing');
+  const [linkIdentifier, setLinkIdentifier] = useState('');
+  const [linkPassword, setLinkPassword] = useState('');
+  const [newCloudUsername, setNewCloudUsername] = useState(authUser.username || '');
+  const [newCloudEmail, setNewCloudEmail] = useState(authUser.email || '');
+  const [newCloudPassword, setNewCloudPassword] = useState('');
+  const [newCloudConfirmPassword, setNewCloudConfirmPassword] = useState('');
+  const [linkLoading, setLinkLoading] = useState(false);
+  const [linkErr, setLinkErr] = useState<string | null>(null);
+  const [linkMsg, setLinkMsg] = useState<string | null>(null);
 
   // Unified 6-digit PIN & Session Security state
   const [pinSubMode, setPinSubMode] = useState<'change' | 'reset_with_pwd'>(
@@ -234,6 +251,65 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
       `Data berhasil dipulihkan (${pendingRestore.accounts.length} akun, ${pendingRestore.transactions.length} transaksi, ${pendingRestore.obligations.length} kewajiban).`
     );
     setPendingRestore(null);
+  };
+
+  const handleLinkExistingSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setLinkErr(null);
+    setLinkMsg(null);
+    setLinkLoading(true);
+    try {
+      const res = await linkLocalAccountToExistingCloud(session, {
+        identifier: linkIdentifier,
+        password: linkPassword,
+      });
+      setLinkPassword('');
+      setLinkMsg(
+        res.alreadyLinked
+          ? 'Akun lokal dan akun Cloud Supabase sudah tertaut pada identitas yang sama (idempoten).'
+          : 'Akun lokal berhasil ditautkan ke Cloud Supabase. Seluruh data keuangan lokal Anda tetap utuh.'
+      );
+      onLinkedSession?.(res.session, res.user);
+      onRefreshAuthUser();
+    } catch (err) {
+      setLinkErr(err instanceof Error ? err.message : 'Gagal menautkan akun ke Cloud Supabase.');
+    } finally {
+      setLinkLoading(false);
+    }
+  };
+
+  const handleRegisterAndLinkSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setLinkErr(null);
+    setLinkMsg(null);
+    setLinkLoading(true);
+    try {
+      const res = await registerAndLinkCloudAccount(session, {
+        username: newCloudUsername,
+        email: newCloudEmail,
+        password: newCloudPassword,
+        confirmPassword: newCloudConfirmPassword,
+      });
+      setNewCloudPassword('');
+      setNewCloudConfirmPassword('');
+      if (res.requiresEmailVerification) {
+        setLinkMsg(
+          'Akun Cloud baru berhasil dibuat. Verifikasi email Anda terlebih dahulu, lalu gunakan tab "Tautkan ke Akun Cloud Ada" untuk menyelesaikan penautan.'
+        );
+      } else {
+        setLinkMsg(
+          'Akun Cloud baru berhasil dibuat dan langsung tertaut ke data lokal Anda.'
+        );
+        onLinkedSession?.(res.session, res.user);
+        onRefreshAuthUser();
+      }
+    } catch (err) {
+      setLinkErr(
+        err instanceof Error ? err.message : 'Gagal membuat dan menautkan akun Cloud Supabase.'
+      );
+    } finally {
+      setLinkLoading(false);
+    }
   };
 
   return (
@@ -581,28 +657,229 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
         </p>
       </section>
 
-      {/* Supabase Cloud Sync Status */}
-      <section className="rounded-2xl border border-slate-200 bg-white p-5 space-y-3">
-        <div className="flex items-center gap-2.5">
-          {syncStatus.mode === 'cloud' ? (
-            <Cloud className="w-5 h-5 text-emerald-700" />
-          ) : (
-            <CloudOff className="w-5 h-5 text-amber-700" />
-          )}
-          <div>
-            <h2 className="font-display text-base font-bold text-slate-900">
-              Status Penyimpanan &amp; Sinkronisasi Cloud
-            </h2>
-            <p className="text-xs text-slate-600">
-              Status saat ini:{' '}
-              <strong>
-                {syncStatus.mode === 'cloud'
-                  ? `Terhubung ke Supabase (${syncStatus.authenticatedEmail})`
-                  : 'Mode Lokal (Offline-First di Perangkat)'}
-              </strong>
+      {/* Supabase Cloud Auth, Account Linking & Storage Status */}
+      <section className="rounded-2xl border border-slate-200 bg-white p-5 space-y-4">
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+          <div className="flex items-center gap-2.5">
+            {isSupabaseConfigured && authUser.mode === 'cloud' ? (
+              <Cloud className="w-5 h-5 text-emerald-700 shrink-0" />
+            ) : (
+              <CloudOff className="w-5 h-5 text-amber-700 shrink-0" />
+            )}
+            <div>
+              <h2 className="font-display text-base font-bold text-slate-900">
+                Autentikasi Cloud &amp; Penautan Akun Lokal
+              </h2>
+              <p className="text-xs text-slate-600">
+                Status sesi:{' '}
+                <strong>
+                  {authUser.mode === 'cloud'
+                    ? `Cloud Auth Supabase (${authUser.email || authUser.username})`
+                    : 'Mode Lokal Offline-First'}
+                </strong>
+                {' · '}
+                <span>
+                  {authUser.isLinked ? 'Tertaut (Local ↔ Cloud)' : 'Belum Tertaut'}
+                </span>
+              </p>
+            </div>
+          </div>
+
+          <span
+            className={`inline-flex items-center gap-1.5 rounded-lg px-2.5 py-1 text-[11px] font-semibold w-fit ${
+              authUser.isLinked
+                ? 'bg-emerald-50 text-emerald-800 border border-emerald-200'
+                : 'bg-slate-100 text-slate-700 border border-slate-200'
+            }`}
+          >
+            <Link2 className="w-3.5 h-3.5" />
+            <span>{authUser.isLinked ? 'Akun Tertaut' : 'Identitas Tunggal'}</span>
+          </span>
+        </div>
+
+        {/* Link Identity Summary */}
+        {authUser.isLinked && (
+          <div className="rounded-xl border border-emerald-200 bg-emerald-50 p-3.5 text-xs text-emerald-950 space-y-1">
+            <p className="font-semibold">Penautan Akun Lokal ↔ Cloud Supabase Aktif</p>
+            <p>
+              ID Penyimpanan Lokal: <code className="font-mono-num">{authUser.localUserId}</code>
+              {' · '}ID Cloud (auth.uid):{' '}
+              <code className="font-mono-num">{authUser.cloudUserId || authUser.linkedCloudUserId}</code>
+            </p>
+            {(authUser.linkedCloudEmail || authUser.email) && (
+              <p>Email Cloud: {authUser.linkedCloudEmail || authUser.email}</p>
+            )}
+            <p className="text-[11px] text-emerald-800">
+              Data keuangan lokal Anda tetap dipertahankan utuh dan tidak tertimpa saat login offline maupun cloud.
             </p>
           </div>
-        </div>
+        )}
+
+        {/* Explicit Linking Form for Unlinked Local Account */}
+        {authUser.mode === 'local' && !authUser.isLinked && isSupabaseConfigured && (
+          <div className="rounded-xl border border-[#B9E2F5] bg-[#E8F6FC]/60 p-4 space-y-3">
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+              <div>
+                <h3 className="text-xs font-bold text-slate-900">
+                  Tautkan Akun Lokal ke Cloud Supabase
+                </h3>
+                <p className="text-[11px] text-slate-600 mt-0.5">
+                  Hubungkan akun lokal (<code>{authUser.localUserId || authUser.userId}</code>) tanpa menghapus atau mencampur data keuangan Anda.
+                </p>
+              </div>
+              <div className="flex items-center gap-1 p-1 bg-white border border-slate-200 rounded-lg w-fit">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setLinkTab('existing');
+                    setLinkErr(null);
+                    setLinkMsg(null);
+                  }}
+                  className={`px-2.5 py-1 text-[11px] font-semibold rounded-md ${
+                    linkTab === 'existing'
+                      ? 'bg-[#0976A6] text-white'
+                      : 'text-slate-600 hover:text-slate-900'
+                  }`}
+                >
+                  Akun Cloud Ada
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setLinkTab('new');
+                    setLinkErr(null);
+                    setLinkMsg(null);
+                  }}
+                  className={`px-2.5 py-1 text-[11px] font-semibold rounded-md ${
+                    linkTab === 'new'
+                      ? 'bg-[#0976A6] text-white'
+                      : 'text-slate-600 hover:text-slate-900'
+                  }`}
+                >
+                  Buat Akun Cloud Baru
+                </button>
+              </div>
+            </div>
+
+            {linkTab === 'existing' ? (
+              <form onSubmit={handleLinkExistingSubmit} className="grid grid-cols-1 sm:grid-cols-3 gap-2.5 items-end">
+                <div>
+                  <label className="block text-[11px] font-semibold text-slate-700 mb-1">
+                    Username atau Email Cloud
+                  </label>
+                  <input
+                    type="text"
+                    required
+                    value={linkIdentifier}
+                    onChange={(e) => setLinkIdentifier(e.target.value)}
+                    placeholder="username atau email@domain.com"
+                    className="w-full rounded-xl border border-slate-300 bg-white px-3 py-2 text-xs min-h-[40px]"
+                  />
+                </div>
+                <div>
+                  <label className="block text-[11px] font-semibold text-slate-700 mb-1">
+                    Password Akun Cloud
+                  </label>
+                  <input
+                    type="password"
+                    required
+                    value={linkPassword}
+                    onChange={(e) => setLinkPassword(e.target.value)}
+                    placeholder="Password cloud"
+                    className="w-full rounded-xl border border-slate-300 bg-white px-3 py-2 text-xs min-h-[40px]"
+                  />
+                </div>
+                <button
+                  type="submit"
+                  disabled={linkLoading}
+                  className="inline-flex items-center justify-center gap-1.5 rounded-xl bg-[#0976A6] px-4 py-2 text-xs font-semibold text-white hover:bg-[#075D83] disabled:opacity-60 min-h-[40px]"
+                >
+                  {linkLoading ? (
+                    <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                  ) : (
+                    <Link2 className="w-3.5 h-3.5" />
+                  )}
+                  <span>Verifikasi &amp; Tautkan</span>
+                </button>
+              </form>
+            ) : (
+              <form onSubmit={handleRegisterAndLinkSubmit} className="grid grid-cols-1 sm:grid-cols-2 gap-2.5 items-end">
+                <div>
+                  <label className="block text-[11px] font-semibold text-slate-700 mb-1">
+                    Username Cloud (3–24: huruf, angka, ., _)
+                  </label>
+                  <input
+                    type="text"
+                    required
+                    value={newCloudUsername}
+                    onChange={(e) => setNewCloudUsername(e.target.value)}
+                    className="w-full rounded-xl border border-slate-300 bg-white px-3 py-2 text-xs min-h-[40px]"
+                  />
+                </div>
+                <div>
+                  <label className="block text-[11px] font-semibold text-slate-700 mb-1">
+                    Email Cloud
+                  </label>
+                  <input
+                    type="email"
+                    required
+                    value={newCloudEmail}
+                    onChange={(e) => setNewCloudEmail(e.target.value)}
+                    placeholder="nama@email.com"
+                    className="w-full rounded-xl border border-slate-300 bg-white px-3 py-2 text-xs min-h-[40px]"
+                  />
+                </div>
+                <div>
+                  <label className="block text-[11px] font-semibold text-slate-700 mb-1">
+                    Password Cloud (min. 8 karakter)
+                  </label>
+                  <input
+                    type="password"
+                    required
+                    value={newCloudPassword}
+                    onChange={(e) => setNewCloudPassword(e.target.value)}
+                    className="w-full rounded-xl border border-slate-300 bg-white px-3 py-2 text-xs min-h-[40px]"
+                  />
+                </div>
+                <div>
+                  <label className="block text-[11px] font-semibold text-slate-700 mb-1">
+                    Konfirmasi Password Cloud
+                  </label>
+                  <input
+                    type="password"
+                    required
+                    value={newCloudConfirmPassword}
+                    onChange={(e) => setNewCloudConfirmPassword(e.target.value)}
+                    className="w-full rounded-xl border border-slate-300 bg-white px-3 py-2 text-xs min-h-[40px]"
+                  />
+                </div>
+                <button
+                  type="submit"
+                  disabled={linkLoading}
+                  className="sm:col-span-2 inline-flex items-center justify-center gap-1.5 rounded-xl bg-[#0976A6] px-4 py-2 text-xs font-semibold text-white hover:bg-[#075D83] disabled:opacity-60 min-h-[40px]"
+                >
+                  {linkLoading ? (
+                    <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                  ) : (
+                    <Link2 className="w-3.5 h-3.5" />
+                  )}
+                  <span>Buat Akun Cloud &amp; Tautkan</span>
+                </button>
+              </form>
+            )}
+
+            {linkErr && (
+              <p className="text-xs font-semibold text-red-700 bg-red-50 border border-red-200 rounded-xl px-3 py-2">
+                {linkErr}
+              </p>
+            )}
+            {linkMsg && (
+              <p className="text-xs font-semibold text-emerald-700 bg-emerald-50 border border-emerald-200 rounded-xl px-3 py-2">
+                {linkMsg}
+              </p>
+            )}
+          </div>
+        )}
 
         {!isSupabaseConfigured ? (
           <div className="rounded-xl border border-amber-200 bg-amber-50 p-4 text-xs text-amber-950 space-y-2">
@@ -610,15 +887,11 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
               Kredensial Supabase belum dikonfigurasi pada environment saat ini.
             </p>
             <p>
-              Aplikasi berjalan lokal di perangkat Anda dengan isolasi data per akun serta hash kredensial PBKDF2-SHA256. Untuk mengaktifkan autentikasi &amp; sinkronisasi cloud multi-perangkat dengan Row Level Security:
+              Aplikasi berjalan lokal di perangkat Anda dengan isolasi data per akun serta hash kredensial PBKDF2-SHA256. Untuk mengaktifkan autentikasi Cloud Supabase dengan Row Level Security:
             </p>
             <ol className="list-decimal pl-5 space-y-1">
               <li>
-                Jalankan skrip migrasi SQL berurutan pada Supabase:{' '}
-                <code>0001_initial_schema.sql</code>,{' '}
-                <code>0002_long_term_obligations_and_calendar.sql</code>,{' '}
-                <code>0003_audit_and_long_term_readiness.sql</code>, dan{' '}
-                <code>0004_user_profiles_auth_pin.sql</code>.
+                Terapkan skrip migrasi SQL <code>0001</code> sampai <code>0006</code> pada Supabase.
               </li>
               <li>
                 Salin <code>VITE_SUPABASE_URL</code> dan <code>VITE_SUPABASE_ANON_KEY</code> ke file <code>.env</code>.
@@ -627,15 +900,15 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
             </ol>
           </div>
         ) : (
-          <div className="rounded-xl border border-emerald-200 bg-emerald-50 p-3.5 text-xs text-emerald-950">
-            <p className="font-semibold">
-              Sinkronisasi Supabase aktif untuk {syncStatus.authenticatedEmail || authUser.username}.
+          <div className="rounded-xl border border-slate-200 bg-slate-50 p-3.5 text-xs text-slate-700 space-y-1">
+            <p className="font-semibold text-slate-900">
+              {authUser.mode === 'cloud'
+                ? `Autentikasi Cloud Supabase aktif untuk ${authUser.email || authUser.username}.`
+                : 'Server Cloud Supabase tersedia. Anda sedang masuk dengan akun Lokal (Offline-First).'}
             </p>
-            {syncStatus.lastSyncedAt && (
-              <p className="mt-0.5">
-                Sinkronisasi terakhir: {new Date(syncStatus.lastSyncedAt).toLocaleString('id-ID')}
-              </p>
-            )}
+            <p className="text-[11px] text-slate-600">
+              Pada tahap ini (Auth &amp; Account Linking), data keuangan Anda tetap disimpan lokal per akun dan tidak disinkronkan otomatis ke tabel cloud sampai modul sinkronisasi penuh diaktifkan.
+            </p>
           </div>
         )}
       </section>

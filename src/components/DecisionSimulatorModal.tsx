@@ -4,6 +4,7 @@ import { FinanceSnapshot, simulateExpenseImpact } from '../engine/financeEngine'
 import { addTransactionAction } from '../hooks/financeActions';
 import { FinanceState } from '../types/finance';
 import { formatIDR, todayISO } from '../utils/format';
+import { resolveSystemAccountId, resolveSystemCategoryId } from '../utils/systemEntityResolver';
 
 interface DecisionSimulatorModalProps {
   isOpen: boolean;
@@ -29,12 +30,32 @@ export const DecisionSimulatorModal: React.FC<DecisionSimulatorModalProps> = ({
     [snapshot.activeAccounts, snapshot.accounts]
   );
 
+  const defaultHangoutCategoryId = useMemo(
+    () => resolveSystemCategoryId(state.categories, 'hangout', 'cat-hangout', 'expense'),
+    [state.categories]
+  );
+  const defaultAccountId = useMemo(
+    () =>
+      activeAccounts[0]?.id ??
+      resolveSystemAccountId(state.accounts, 'cash', 'acc-cash', undefined, { activeOnly: true }),
+    [activeAccounts, state.accounts]
+  );
+
   const [amount, setAmount] = useState<string>('25000');
-  const [categoryId, setCategoryId] = useState<string>('cat-hangout');
-  const [accountId, setAccountId] = useState<string>(activeAccounts[0]?.id ?? 'acc-cash');
+  const [categoryId, setCategoryId] = useState<string>(defaultHangoutCategoryId);
+  const [accountId, setAccountId] = useState<string>(defaultAccountId);
   const [description, setDescription] = useState<string>('');
   const [overrideReason, setOverrideReason] = useState<string>('');
   const [error, setError] = useState<string | null>(null);
+
+  const resolvedCategoryId = expenseCategories.some((c) => c.id === categoryId)
+    ? categoryId
+    : expenseCategories.find((c) => c.id === defaultHangoutCategoryId)?.id ??
+      expenseCategories[0]?.id ??
+      defaultHangoutCategoryId;
+  const resolvedAccountId = activeAccounts.some((a) => a.id === accountId)
+    ? accountId
+    : defaultAccountId;
 
   const numericAmount = Math.max(0, Number(amount) || 0);
 
@@ -43,13 +64,13 @@ export const DecisionSimulatorModal: React.FC<DecisionSimulatorModalProps> = ({
       state,
       {
         amount: numericAmount,
-        categoryId,
-        accountId,
+        categoryId: resolvedCategoryId,
+        accountId: resolvedAccountId,
         date: todayISO(),
       },
       snapshot
     );
-  }, [state, snapshot, numericAmount, categoryId, accountId]);
+  }, [state, snapshot, numericAmount, resolvedCategoryId, resolvedAccountId]);
 
   if (!isOpen) return null;
 
@@ -67,8 +88,8 @@ export const DecisionSimulatorModal: React.FC<DecisionSimulatorModalProps> = ({
       const { state: next } = addTransactionAction(state, {
         type: 'expense',
         amount: numericAmount,
-        categoryId,
-        accountId,
+        categoryId: resolvedCategoryId,
+        accountId: resolvedAccountId,
         date: todayISO(),
         description: description.trim() || `Pengeluaran ${impact.categoryName}`,
         overrideReason: needsOverride ? overrideReason : undefined,
@@ -126,7 +147,7 @@ export const DecisionSimulatorModal: React.FC<DecisionSimulatorModalProps> = ({
             <div>
               <label className="block text-xs font-semibold text-slate-700 mb-1">Kategori</label>
               <select
-                value={categoryId}
+                value={resolvedCategoryId}
                 onChange={(e) => setCategoryId(e.target.value)}
                 className="w-full rounded-xl border border-slate-300 bg-white px-3 py-2.5 text-sm focus:border-[#0C8FC5] focus:outline-none"
               >
@@ -140,7 +161,7 @@ export const DecisionSimulatorModal: React.FC<DecisionSimulatorModalProps> = ({
             <div>
               <label className="block text-xs font-semibold text-slate-700 mb-1">Akun Sumber</label>
               <select
-                value={accountId}
+                value={resolvedAccountId}
                 onChange={(e) => setAccountId(e.target.value)}
                 className="w-full rounded-xl border border-slate-300 bg-white px-3 py-2.5 text-sm focus:border-[#0C8FC5] focus:outline-none"
               >

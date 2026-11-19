@@ -19,6 +19,11 @@ import {
 } from '../hooks/financeActions';
 import { FinanceState, IncomeSourceType, Transaction } from '../types/finance';
 import { formatIDR, todayISO } from '../utils/format';
+import {
+  matchesCategorySystemKey,
+  resolveSystemAccountId,
+  resolveSystemCategoryId,
+} from '../utils/systemEntityResolver';
 
 export type QuickPreset =
   | 'allowance'
@@ -64,9 +69,16 @@ export const QuickTransactionModal: React.FC<QuickTransactionModalProps> = ({
   const [friendName, setFriendName] = useState<string>('');
   const [friendDueDate, setFriendDueDate] = useState<string>('');
   const [amount, setAmount] = useState<string>('');
-  const [categoryId, setCategoryId] = useState<string>('cat-cig');
-  const [accountId, setAccountId] = useState<string>(activeAccounts[0]?.id ?? 'acc-cash');
-  const [toAccountId, setToAccountId] = useState<string>(activeAccounts[1]?.id ?? 'acc-ewallet');
+  const [categoryId, setCategoryId] = useState<string>(() =>
+    resolveSystemCategoryId(state.categories, 'cigarette', 'cat-cig', 'expense')
+  );
+  const [accountId, setAccountId] = useState<string>(
+    activeAccounts[0]?.id ?? resolveSystemAccountId(state.accounts, 'cash', 'acc-cash')
+  );
+  const [toAccountId, setToAccountId] = useState<string>(
+    activeAccounts[1]?.id ??
+      resolveSystemAccountId(state.accounts, 'ewallet', 'acc-ewallet', activeAccounts[0]?.id)
+  );
   const [incomeSource, setIncomeSource] = useState<IncomeSourceType>('daily_allowance');
   const [date, setDate] = useState<string>(todayISO());
   const [description, setDescription] = useState<string>('');
@@ -91,8 +103,11 @@ export const QuickTransactionModal: React.FC<QuickTransactionModalProps> = ({
     setFriendName('');
     setFriendDueDate('');
 
-    const defaultAcc = activeAccounts[0]?.id ?? 'acc-cash';
-    const secondAcc = activeAccounts.find((a) => a.id !== defaultAcc)?.id ?? defaultAcc;
+    const defaultAcc =
+      activeAccounts[0]?.id ?? resolveSystemAccountId(state.accounts, 'cash', 'acc-cash');
+    const secondAcc =
+      activeAccounts.find((a) => a.id !== defaultAcc)?.id ??
+      resolveSystemAccountId(state.accounts, 'ewallet', 'acc-ewallet', defaultAcc);
 
     if (editingTx) {
       setTab(editingTx.type);
@@ -110,39 +125,55 @@ export const QuickTransactionModal: React.FC<QuickTransactionModalProps> = ({
     setNotes('');
     if (preset === 'allowance') {
       setTab('income');
-      setCategoryId('cat-income-allowance');
+      setCategoryId(
+        resolveSystemCategoryId(
+          state.categories,
+          'income_allowance',
+          'cat-income-allowance',
+          'income'
+        )
+      );
       setAccountId(defaultAcc);
       setIncomeSource('daily_allowance');
       setAmount('25000');
       setDescription('Pemasukan aktual diterima');
     } else if (preset === 'cigarette') {
       setTab('expense');
-      setCategoryId('cat-cig');
+      setCategoryId(resolveSystemCategoryId(state.categories, 'cigarette', 'cat-cig', 'expense'));
       setAccountId(defaultAcc);
       setAmount('22000');
       setDescription('Beli rokok 1 bungkus');
     } else if (preset === 'hangout') {
       setTab('expense');
-      setCategoryId('cat-hangout');
+      setCategoryId(resolveSystemCategoryId(state.categories, 'hangout', 'cat-hangout', 'expense'));
       setAccountId(defaultAcc);
       setAmount('30000');
       setDescription('Nongkrong / ngopi');
     } else if (preset === 'food') {
       setTab('expense');
-      setCategoryId('cat-food');
+      setCategoryId(resolveSystemCategoryId(state.categories, 'food', 'cat-food', 'expense'));
       setAccountId(defaultAcc);
       setAmount('15000');
       setDescription('Makan di luar');
     } else if (preset === 'kkn') {
       setTab('expense');
-      setCategoryId('cat-college');
+      setCategoryId(
+        resolveSystemCategoryId(
+          state.categories,
+          'college_obligation',
+          'cat-college',
+          'expense'
+        )
+      );
       setAccountId(defaultAcc);
       const firstActiveOb = state.obligations.find((o) => o.status === 'active' && !o.isArchived);
       setAmount(firstActiveOb ? String(firstActiveOb.amount) : '30000');
       setDescription(firstActiveOb ? `Bayar ${firstActiveOb.name}` : 'Bayar kewajiban rutin');
     } else if (preset === 'debt') {
       setTab('expense');
-      setCategoryId('cat-debt');
+      setCategoryId(
+        resolveSystemCategoryId(state.categories, 'debt_payment', 'cat-debt', 'expense')
+      );
       setAccountId(defaultAcc);
       const firstDebt = findDefaultActiveDebt(state.debts, 'payable');
       setAmount(firstDebt ? String(firstDebt.remainingAmount) : '27000');
@@ -155,13 +186,13 @@ export const QuickTransactionModal: React.FC<QuickTransactionModalProps> = ({
       setDescription('Transfer antar akun');
     } else {
       setTab('expense');
-      setCategoryId('cat-food');
+      setCategoryId(resolveSystemCategoryId(state.categories, 'food', 'cat-food', 'expense'));
       setAccountId(defaultAcc);
       setToAccountId(secondAcc);
       setAmount('');
       setDescription('');
     }
-  }, [isOpen, preset, editingTx, state.debts, state.obligations, activeAccounts]);
+  }, [isOpen, preset, editingTx, state.debts, state.obligations, state.categories, state.accounts, activeAccounts]);
 
   const numericAmount = Number(amount) || 0;
 
@@ -314,7 +345,10 @@ export const QuickTransactionModal: React.FC<QuickTransactionModalProps> = ({
 
       if (tab === 'expense' && preset === 'debt') {
         const activeDebt = findDefaultActiveDebt(state.debts, 'payable');
-        if (activeDebt && categoryId === 'cat-debt') {
+        if (
+          activeDebt &&
+          matchesCategorySystemKey(categoryId, state.categories, 'debt_payment', 'cat-debt')
+        ) {
           const next = repayDebtAction(state, {
             debtId: activeDebt.id,
             amount: numericAmount,
@@ -332,7 +366,15 @@ export const QuickTransactionModal: React.FC<QuickTransactionModalProps> = ({
         const kkn = state.obligations.find(
           (o) => o.status === 'active' && !o.isArchived && (!o.endDate || date <= o.endDate)
         );
-        if (kkn && categoryId === 'cat-college') {
+        if (
+          kkn &&
+          matchesCategorySystemKey(
+            categoryId,
+            state.categories,
+            'college_obligation',
+            'cat-college'
+          )
+        ) {
           const next = payObligationAction(state, {
             obligationId: kkn.id,
             amount: numericAmount,
@@ -469,8 +511,21 @@ export const QuickTransactionModal: React.FC<QuickTransactionModalProps> = ({
                     setTab(nextTab);
                     setShowGate(false);
                     setExpenseMode('standard');
-                    if (nextTab === 'expense') setCategoryId('cat-food');
-                    if (nextTab === 'income') setCategoryId('cat-income-allowance');
+                    if (nextTab === 'expense') {
+                      setCategoryId(
+                        resolveSystemCategoryId(state.categories, 'food', 'cat-food', 'expense')
+                      );
+                    }
+                    if (nextTab === 'income') {
+                      setCategoryId(
+                        resolveSystemCategoryId(
+                          state.categories,
+                          'income_allowance',
+                          'cat-income-allowance',
+                          'income'
+                        )
+                      );
+                    }
                   }}
                   className={`py-2 text-xs font-semibold rounded-lg transition-colors whitespace-nowrap ${
                     tab === t.id

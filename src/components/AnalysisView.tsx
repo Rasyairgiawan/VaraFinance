@@ -16,6 +16,7 @@ import { FinanceSnapshot } from '../engine/financeEngine';
 import { updateProjectionAssumptionsAction } from '../hooks/financeActions';
 import { FinanceState } from '../types/finance';
 import { addDaysISO, formatDateID, formatIDR, startOfWeekISO } from '../utils/format';
+import { buildCategorySystemKeyLookup } from '../utils/systemEntityResolver';
 import { buildFinanceCSVContent } from '../utils/transactionDisplay';
 
 interface AnalysisViewProps {
@@ -27,6 +28,7 @@ interface AnalysisViewProps {
 export const AnalysisView: React.FC<AnalysisViewProps> = ({ state, snapshot, onCommit }) => {
   const [showAssumptions, setShowAssumptions] = useState(false);
 
+  const categoryKeyLookup = buildCategorySystemKeyLookup(state.categories);
   const validTransactions = state.transactions.filter((t) => !t.isVoided);
 
   const currWeekStart = startOfWeekISO(snapshot.nowISO);
@@ -40,17 +42,19 @@ export const AnalysisView: React.FC<AnalysisViewProps> = ({ state, snapshot, onC
     const expenses = txs.filter(
       (t) =>
         t.type === 'expense' &&
-        t.categoryId !== 'cat-biz-ops' &&
-        t.categoryId !== 'cat-debt' &&
+        !categoryKeyLookup.isKey(t.categoryId, 'business_ops') &&
+        !categoryKeyLookup.isKey(t.categoryId, 'debt_payment') &&
         !t.excludeFromExpenseStats
     );
     const expenseTotal = expenses.reduce((s, t) => s + t.amount, 0);
-    const cig = expenses.filter((t) => t.categoryId === 'cat-cig').reduce((s, t) => s + t.amount, 0);
+    const cig = expenses
+      .filter((t) => categoryKeyLookup.isKey(t.categoryId, 'cigarette'))
+      .reduce((s, t) => s + t.amount, 0);
     const hang = expenses
-      .filter((t) => t.categoryId === 'cat-hangout')
+      .filter((t) => categoryKeyLookup.isKey(t.categoryId, 'hangout'))
       .reduce((s, t) => s + t.amount, 0);
     const snack = expenses
-      .filter((t) => t.categoryId === 'cat-other-exp')
+      .filter((t) => categoryKeyLookup.isKey(t.categoryId, 'other_expense'))
       .reduce((s, t) => s + t.amount, 0);
     const other = Math.max(0, expenseTotal - cig - hang - snack);
     return {
@@ -680,11 +684,11 @@ export const AnalysisView: React.FC<AnalysisViewProps> = ({ state, snapshot, onC
                     <div className="h-2 w-full rounded-full bg-slate-100 overflow-hidden">
                       <div
                         className={`h-full rounded-full ${
-                          c.categoryId === 'cat-cig'
+                          categoryKeyLookup.isKey(c.categoryId, 'cigarette')
                             ? 'bg-red-600'
-                            : c.categoryId === 'cat-hangout'
+                            : categoryKeyLookup.isKey(c.categoryId, 'hangout')
                             ? 'bg-amber-500'
-                            : c.categoryId === 'cat-other-exp'
+                            : categoryKeyLookup.isKey(c.categoryId, 'other_expense')
                             ? 'bg-indigo-500'
                             : 'bg-[#0C8FC5]'
                         }`}

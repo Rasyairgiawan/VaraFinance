@@ -14,17 +14,22 @@ import {
   User,
 } from 'lucide-react';
 import {
+  CloudAuthError,
+  completeCloudPasswordReset,
   evaluatePasswordStrength,
   hasAnyRegisteredLocalUser,
   loginWithPassword,
   recoverLocalPasswordWithKey,
   registerAccount,
   requestCloudPasswordReset,
+  resendCloudVerificationEmail,
 } from '../services/authService';
 import { AuthSession, AuthUserSummary } from '../types/finance';
 
 interface AuthScreenProps {
   isSupabaseConfigured: boolean;
+  recoveryMode?: boolean;
+  onRecoveryComplete?: () => void;
   onAuthenticated: (result: {
     session: AuthSession;
     user: AuthUserSummary;
@@ -36,6 +41,8 @@ type AuthTab = 'login' | 'register' | 'forgot';
 
 export const AuthScreen: React.FC<AuthScreenProps> = ({
   isSupabaseConfigured,
+  recoveryMode = false,
+  onRecoveryComplete,
   onAuthenticated,
 }) => {
   const hasExistingLocal = hasAnyRegisteredLocalUser();
@@ -47,6 +54,12 @@ export const AuthScreen: React.FC<AuthScreenProps> = ({
   const [loginUsername, setLoginUsername] = useState('');
   const [loginPassword, setLoginPassword] = useState('');
   const [showLoginPassword, setShowLoginPassword] = useState(false);
+  const [useLocalLoginMode, setUseLocalLoginMode] = useState(false);
+
+  // Email verification resend helper
+  const [unverifiedEmail, setUnverifiedEmail] = useState<string | null>(null);
+  const [resendEmailInput, setResendEmailInput] = useState('');
+  const [resendLoading, setResendLoading] = useState(false);
 
   // Register state
   const [regUsername, setRegUsername] = useState('');
@@ -65,6 +78,11 @@ export const AuthScreen: React.FC<AuthScreenProps> = ({
   const [forgotConfirmPassword, setForgotConfirmPassword] = useState('');
   const [showForgotPassword, setShowForgotPassword] = useState(false);
 
+  // Cloud Password Recovery completion state
+  const [recoveryNewPwd, setRecoveryNewPwd] = useState('');
+  const [recoveryConfirmPwd, setRecoveryConfirmPwd] = useState('');
+  const [showRecoveryPwd, setShowRecoveryPwd] = useState(false);
+
   // Shared async / feedback state
   const [loading, setLoading] = useState(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
@@ -81,6 +99,7 @@ export const AuthScreen: React.FC<AuthScreenProps> = ({
 
   const strength = evaluatePasswordStrength(regPassword);
   const forgotStrength = evaluatePasswordStrength(forgotNewPassword);
+  const recoveryStrength = evaluatePasswordStrength(recoveryNewPwd);
 
   const switchTab = (next: AuthTab) => {
     setTab(next);
@@ -92,17 +111,48 @@ export const AuthScreen: React.FC<AuthScreenProps> = ({
     e.preventDefault();
     setErrorMsg(null);
     setInfoMsg(null);
+    setUnverifiedEmail(null);
     setLoading(true);
     try {
       const res = await loginWithPassword({
         username: loginUsername,
         password: loginPassword,
+        preferredMode: useLocalLoginMode ? 'local' : 'auto',
       });
       onAuthenticated({ session: res.session, user: res.user });
     } catch (err) {
+      if (err instanceof CloudAuthError && err.code === 'EMAIL_NOT_CONFIRMED') {
+        const trimmed = loginUsername.trim();
+        if (trimmed.includes('@')) {
+          setUnverifiedEmail(trimmed.toLowerCase());
+          setResendEmailInput(trimmed.toLowerCase());
+        } else {
+          setUnverifiedEmail('');
+        }
+      }
       setErrorMsg(err instanceof Error ? err.message : 'Gagal melakukan autentikasi.');
     } finally {
       setLoading(false);
+    }
+  };
+
+  const handleResendVerification = async () => {
+    const targetEmail = (resendEmailInput || unverifiedEmail || '').trim();
+    if (!targetEmail) {
+      setErrorMsg('Masukkan alamat email akun untuk mengirim ulang verifikasi.');
+      return;
+    }
+    setResendLoading(true);
+    setErrorMsg(null);
+    try {
+      await resendCloudVerificationEmail(targetEmail);
+      setInfoMsg(
+        `Email verifikasi baru telah dikirim ke ${targetEmail}. Klik tautan di email lalu masuk menggunakan email Anda.`
+      );
+    } catch (err) {
+      setErrorMsg(err instanceof Error ? err.message : 'Gagal mengirim ulang email verifikasi.');
+    } finally {
+      setResendLoading(false);
     }
   };
 
@@ -110,6 +160,7 @@ export const AuthScreen: React.FC<AuthScreenProps> = ({
     e.preventDefault();
     setErrorMsg(null);
     setInfoMsg(null);
+    setUnverifiedEmail(null);
     setLoading(true);
     try {
       const res = await registerAccount({
@@ -121,9 +172,12 @@ export const AuthScreen: React.FC<AuthScreenProps> = ({
         confirmPin: regConfirmPin,
       });
 
-      if (res.requiresEmailVerification) {
+      if (res.requiresEmailVerification || !res.session) {
+        const normalizedEmail = regEmail.trim().toLowerCase();
+        setUnverifiedEmail(normalizedEmail || '');
+        setResendEmailInput(normalizedEmail);
         setInfoMsg(
-          'Akun berhasil dibuat. Periksa kotak masuk email Anda untuk memverifikasi akun sebelum masuk.'
+          'Akun Cloud berhasil dibuat. Periksa kotak masuk email Anda untuk memverifikasi akun. Setelah memverifikasi email, masuk pertama kali menggunakan email agar profil cloud terbentuk.'
         );
         setTab('login');
         return;
@@ -145,6 +199,24 @@ export const AuthScreen: React.FC<AuthScreenProps> = ({
       }
     } catch (err) {
       setErrorMsg(err instanceof Error ? err.message : 'Gagal membuat akun.');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleRecoveryCompleteSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setErrorMsg(null);
+    setInfoMsg(null);
+    setLoading(true);
+    try {
+      await completeCloudPasswordReset(recoveryNewPwd, recoveryConfirmPwd);
+      setRecoveryNewPwd('');
+      setRecoveryConfirmPwd('');
+      setInfoMsg('Password akun Cloud berhasil diperbarui.');
+      onRecoveryComplete?.();
+    } catch (err) {
+      setErrorMsg(err instanceof Error ? err.message : 'Gagal memperbarui password baru.');
     } finally {
       setLoading(false);
     }
@@ -191,6 +263,116 @@ export const AuthScreen: React.FC<AuthScreenProps> = ({
       // Clipboard fallback ignored if blocked in non-HTTPS iframe
     }
   };
+
+  if (recoveryMode) {
+    return (
+      <div className="min-h-screen bg-slate-50 flex items-center justify-center px-4 py-8">
+        <div className="w-full max-w-md rounded-2xl border border-slate-200 bg-white p-6 sm:p-8 space-y-5">
+          <div className="flex items-center gap-3">
+            <div className="w-10 h-10 rounded-xl bg-[#E8F6FC] text-[#0976A6] flex items-center justify-center shrink-0">
+              <KeyRound className="w-5 h-5" />
+            </div>
+            <div>
+              <h1 className="font-display text-lg font-bold text-slate-900">
+                Setel Password Baru (Cloud)
+              </h1>
+              <p className="text-xs text-slate-500">
+                Tautan pemulihan terverifikasi — masukkan password baru Anda.
+              </p>
+            </div>
+          </div>
+
+          {errorMsg && (
+            <div
+              role="alert"
+              className="rounded-xl border border-red-200 bg-red-50 px-3.5 py-2.5 text-xs font-medium text-red-800 flex items-start gap-2"
+            >
+              <AlertCircle className="w-4 h-4 text-red-600 shrink-0 mt-0.5" />
+              <span>{errorMsg}</span>
+            </div>
+          )}
+
+          <form onSubmit={handleRecoveryCompleteSubmit} className="space-y-4">
+            <div>
+              <label
+                htmlFor="recovery-new-password"
+                className="block text-xs font-semibold text-slate-700 mb-1.5"
+              >
+                Password Baru (min. 8 karakter, huruf &amp; angka)
+              </label>
+              <div className="relative">
+                <Lock className="w-4 h-4 text-slate-400 absolute left-3.5 top-1/2 -translate-y-1/2" />
+                <input
+                  id="recovery-new-password"
+                  type={showRecoveryPwd ? 'text' : 'password'}
+                  required
+                  value={recoveryNewPwd}
+                  onChange={(e) => setRecoveryNewPwd(e.target.value)}
+                  placeholder="Buat password baru"
+                  className="w-full rounded-xl border border-slate-300 bg-white pl-10 pr-11 py-2.5 text-sm text-slate-900 focus:border-[#0C8FC5] focus:outline-none min-h-[44px]"
+                />
+                <button
+                  type="button"
+                  onClick={() => setShowRecoveryPwd((v) => !v)}
+                  aria-label={showRecoveryPwd ? 'Sembunyikan password' : 'Tampilkan password'}
+                  className="absolute right-1.5 top-1/2 -translate-y-1/2 min-w-[38px] min-h-[38px] flex items-center justify-center text-slate-500 hover:text-slate-800 rounded-lg"
+                >
+                  {showRecoveryPwd ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                </button>
+              </div>
+              {recoveryNewPwd.length > 0 && !recoveryStrength.valid && (
+                <p className="text-[11px] text-amber-700 mt-1">
+                  {recoveryStrength.errors.join(' ')}
+                </p>
+              )}
+            </div>
+
+            <div>
+              <label
+                htmlFor="recovery-confirm-password"
+                className="block text-xs font-semibold text-slate-700 mb-1.5"
+              >
+                Konfirmasi Password Baru
+              </label>
+              <input
+                id="recovery-confirm-password"
+                type={showRecoveryPwd ? 'text' : 'password'}
+                required
+                value={recoveryConfirmPwd}
+                onChange={(e) => setRecoveryConfirmPwd(e.target.value)}
+                placeholder="Ulangi password baru"
+                className="w-full rounded-xl border border-slate-300 bg-white px-3.5 py-2.5 text-sm text-slate-900 focus:border-[#0C8FC5] focus:outline-none min-h-[44px]"
+              />
+            </div>
+
+            <div className="flex flex-col sm:flex-row gap-2">
+              <button
+                type="submit"
+                disabled={loading}
+                className="flex-1 inline-flex items-center justify-center gap-2 rounded-xl bg-[#0976A6] py-3 px-4 text-sm font-semibold text-white hover:bg-[#075D83] disabled:opacity-60 min-h-[44px]"
+              >
+                {loading ? (
+                  <>
+                    <Loader2 className="w-4 h-4 animate-spin" />
+                    <span>Menyimpan...</span>
+                  </>
+                ) : (
+                  <span>Simpan Password Baru</span>
+                )}
+              </button>
+              <button
+                type="button"
+                onClick={() => onRecoveryComplete?.()}
+                className="rounded-xl border border-slate-300 bg-white px-4 py-3 text-xs font-semibold text-slate-700 hover:bg-slate-50 min-h-[44px]"
+              >
+                Batal
+              </button>
+            </div>
+          </form>
+        </div>
+      </div>
+    );
+  }
 
   if (pendingRecoveryKey) {
     return (
@@ -412,6 +594,29 @@ export const AuthScreen: React.FC<AuthScreenProps> = ({
               </div>
             )}
 
+            {isSupabaseConfigured && unverifiedEmail !== null && tab === 'login' && (
+              <div className="rounded-xl border border-amber-200 bg-amber-50 p-3.5 space-y-2.5 text-xs text-amber-950">
+                <p className="font-semibold">Belum menerima email verifikasi?</p>
+                <div className="flex flex-col sm:flex-row gap-2">
+                  <input
+                    type="email"
+                    value={resendEmailInput}
+                    onChange={(e) => setResendEmailInput(e.target.value)}
+                    placeholder="nama@email.com"
+                    className="flex-1 rounded-lg border border-amber-300 bg-white px-3 py-1.5 text-xs text-slate-900 min-h-[36px]"
+                  />
+                  <button
+                    type="button"
+                    disabled={resendLoading}
+                    onClick={handleResendVerification}
+                    className="rounded-lg bg-amber-800 px-3 py-1.5 text-xs font-semibold text-white hover:bg-amber-900 disabled:opacity-60 min-h-[36px] whitespace-nowrap"
+                  >
+                    {resendLoading ? 'Mengirim...' : 'Kirim Ulang Verifikasi'}
+                  </button>
+                </div>
+              </div>
+            )}
+
             {/* LOGIN FORM */}
             {tab === 'login' && (
               <form onSubmit={handleLoginSubmit} className="space-y-4">
@@ -420,7 +625,7 @@ export const AuthScreen: React.FC<AuthScreenProps> = ({
                     htmlFor="login-username"
                     className="block text-xs font-semibold text-slate-700 mb-1.5"
                   >
-                    Username{isSupabaseConfigured ? ' atau Email' : ''}
+                    Username{isSupabaseConfigured && !useLocalLoginMode ? ' atau Email' : ''}
                   </label>
                   <div className="relative">
                     <User className="w-4 h-4 text-slate-400 absolute left-3.5 top-1/2 -translate-y-1/2" />
@@ -431,7 +636,11 @@ export const AuthScreen: React.FC<AuthScreenProps> = ({
                       autoComplete="username"
                       value={loginUsername}
                       onChange={(e) => setLoginUsername(e.target.value)}
-                      placeholder={isSupabaseConfigured ? 'username atau email' : 'Contoh: arya_pratama'}
+                      placeholder={
+                        isSupabaseConfigured && !useLocalLoginMode
+                          ? 'username atau email'
+                          : 'Contoh: arya_pratama'
+                      }
                       className="w-full rounded-xl border border-slate-300 bg-white pl-10 pr-4 py-2.5 text-sm text-slate-900 placeholder:text-slate-400 focus:border-[#0C8FC5] focus:outline-none min-h-[44px]"
                     />
                   </div>
@@ -480,6 +689,20 @@ export const AuthScreen: React.FC<AuthScreenProps> = ({
                   </div>
                 </div>
 
+                {isSupabaseConfigured && hasExistingLocal && (
+                  <label className="flex items-start gap-2.5 rounded-xl border border-slate-200 bg-slate-50 px-3 py-2.5 text-xs text-slate-700 cursor-pointer">
+                    <input
+                      type="checkbox"
+                      checked={useLocalLoginMode}
+                      onChange={(e) => setUseLocalLoginMode(e.target.checked)}
+                      className="mt-0.5 rounded border-slate-300 text-[#0976A6]"
+                    />
+                    <span>
+                      <strong>Masuk ke Akun Lokal (Offline)</strong> — gunakan kredensial lokal perangkat tanpa koneksi cloud.
+                    </span>
+                  </label>
+                )}
+
                 <button
                   type="submit"
                   disabled={loading}
@@ -518,10 +741,13 @@ export const AuthScreen: React.FC<AuthScreenProps> = ({
                       autoComplete="username"
                       value={regUsername}
                       onChange={(e) => setRegUsername(e.target.value)}
-                      placeholder="huruf, angka, titik, atau _"
+                      placeholder="huruf, angka, titik (.), atau _"
                       className="w-full rounded-xl border border-slate-300 bg-white pl-10 pr-4 py-2.5 text-sm text-slate-900 placeholder:text-slate-400 focus:border-[#0C8FC5] focus:outline-none min-h-[44px]"
                     />
                   </div>
+                  <p className="text-[11px] text-slate-500 mt-1">
+                    3–24 karakter: huruf, angka, titik (.), atau garis bawah (_).
+                  </p>
                 </div>
 
                 {isSupabaseConfigured && (

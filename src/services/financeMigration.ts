@@ -1,4 +1,8 @@
-import { getSystemKeyForLegacyId, SYSTEM_KEY_ALLOWLISTS } from '../data/initialProfile';
+import {
+  createInitialFinanceState,
+  getSystemKeyForLegacyId,
+  SYSTEM_KEY_ALLOWLISTS,
+} from '../data/initialProfile';
 import {
   Account,
   AccountTransfer,
@@ -473,6 +477,7 @@ function remapReminderStates(
     debts: CollectionLookup;
     goals: CollectionLookup;
     customReminders: CollectionLookup;
+    physicalItemLoans: CollectionLookup;
   }
 ): Record<string, ReminderActionState> | undefined {
   if (!reminderStates) return undefined;
@@ -491,6 +496,9 @@ function remapReminderStates(
     } else if (key.startsWith('rem-custom-')) {
       const oldId = key.slice('rem-custom-'.length);
       remapped[`rem-custom-${lookupIdFromCollection(oldId, lookups.customReminders) ?? oldId}`] = value;
+    } else if (key.startsWith('rem-loan-')) {
+      const oldId = key.slice('rem-loan-'.length);
+      remapped[`rem-loan-${lookupIdFromCollection(oldId, lookups.physicalItemLoans) ?? oldId}`] = value;
     } else {
       remapped[key] = value;
     }
@@ -1580,11 +1588,23 @@ export function migrateFinanceStateToUUID(
     : undefined;
 
   const lossRecordIdMap = new Map<string, string>();
+  const resolveLossRecordId = (oldLossId: string | undefined): string | undefined => {
+    if (!oldLossId) return undefined;
+    const direct = lossRecordIdMap.get(oldLossId);
+    if (direct) return direct;
+    if (isValidUUID(oldLossId)) {
+      return lossRecordIdMap.get(oldLossId.toLowerCase()) ?? oldLossId.toLowerCase();
+    }
+    return oldLossId;
+  };
   const physicalAssets: PhysicalAsset[] | undefined = clone.physicalAssets
     ? clone.physicalAssets.map((pa) => {
         const remappedLosses = (pa.lossHistory ?? []).map((lr) => {
           const nextLossId = remapNestedEntryId(lr.id);
           lossRecordIdMap.set(lr.id, nextLossId);
+          if (isValidUUID(lr.id)) {
+            lossRecordIdMap.set(lr.id.toLowerCase(), nextLossId);
+          }
           return {
             ...lr,
             id: nextLossId,
@@ -1663,9 +1683,7 @@ export function migrateFinanceStateToUUID(
           recoveryHistory: (pa.recoveryHistory ?? []).map((rr) => ({
             ...rr,
             id: remapNestedEntryId(rr.id),
-            lossRecordId: rr.lossRecordId
-              ? lossRecordIdMap.get(rr.lossRecordId) ?? rr.lossRecordId
-              : undefined,
+            lossRecordId: resolveLossRecordId(rr.lossRecordId),
           })),
           updatedAt: pa.updatedAt ?? nowISO,
         };
@@ -1688,9 +1706,7 @@ export function migrateFinanceStateToUUID(
           `physicalItemLoans[${pl.id}].compensationDebtId`,
           orphanErrors
         ),
-        lossRecordId: pl.lossRecordId
-          ? lossRecordIdMap.get(pl.lossRecordId) ?? pl.lossRecordId
-          : undefined,
+        lossRecordId: resolveLossRecordId(pl.lossRecordId),
         conditionHistory: (pl.conditionHistory ?? []).map((ch) => ({
           ...ch,
           id: remapNestedEntryId(ch.id),
@@ -1974,3 +1990,333 @@ export function migrateFinanceStateToUUID(
     },
   };
 }
+
+const REMINDER_ENTITY_KEY_RE = /^(rem-ob-|rem-debt-|rem-goal-|rem-custom-|rem-loan-)(.+)$/;
+
+const NON_ENTITY_CHANGELOG_SENTINELS: Readonly<Record<string, ReadonlySet<string>>> = {
+  category: new Set(['presets']),
+};
+
+function hasNonUuidString(value: unknown): boolean {
+  return typeof value === 'string' && value.trim().length > 0 && !isValidUUID(value);
+}
+
+/**
+ * Determines whether a raw or hydrated FinanceState requires UUID migration
+ * (either pre-v3 schemaVersion or any non-UUID primary/foreign/nested/reminder key).
+ */
+export function needsUuidMigration(rawState: unknown): boolean {
+  if (!rawState || typeof rawState !== 'object' || Array.isArray(rawState)) {
+    return false;
+  }
+  const rec = rawState as Record<string, unknown>;
+  if (typeof rec.schemaVersion !== 'number' || rec.schemaVersion < 3) {
+    return true;
+  }
+
+  const checkCollectionIds = (arr: unknown): boolean => {
+    if (!Array.isArray(arr)) return false;
+    for (const item of arr) {
+      if (
+        item &&
+        typeof item === 'object' &&
+        hasNonUuidString((item as Record<string, unknown>).id)
+      ) {
+        return true;
+      }
+    }
+    return false;
+  };
+
+  const checkItemFields = (arr: unknown, fields: string[]): boolean => {
+    if (!Array.isArray(arr)) return false;
+    for (const item of arr) {
+      if (!item || typeof item !== 'object') continue;
+      const obj = item as Record<string, unknown>;
+      if (hasNonUuidString(obj.id)) return true;
+      for (const f of fields) {
+        if (hasNonUuidString(obj[f])) return true;
+      }
+    }
+    return false;
+  };
+
+  const checkFundAllocations = (arr: unknown): boolean => {
+    if (!Array.isArray(arr)) return false;
+    for (const alloc of arr) {
+      if (
+        alloc &&
+        typeof alloc === 'object' &&
+        hasNonUuidString((alloc as Record<string, unknown>).accountId)
+      ) {
+        return true;
+      }
+    }
+    return false;
+  };
+
+  if (checkCollectionIds(rec.accounts)) return true;
+  if (checkCollectionIds(rec.categories)) return true;
+  if (checkCollectionIds(rec.projects)) return true;
+  if (checkCollectionIds(rec.goals)) return true;
+
+  if (
+    checkItemFields(rec.transactions, [
+      'accountId',
+      'categoryId',
+      'projectId',
+      'debtId',
+      'splitBillId',
+      'custodialFundId',
+      'projectAdvanceId',
+      'assetId',
+      'physicalLoanId',
+      'ledgerGroupId',
+      'parentTransactionId',
+    ])
+  ) {
+    return true;
+  }
+  if (checkItemFields(rec.transfers, ['fromAccountId', 'toAccountId'])) return true;
+  if (Array.isArray(rec.transfers)) {
+    for (const tr of rec.transfers) {
+      if (!tr || typeof tr !== 'object') continue;
+      const movements = (tr as Record<string, unknown>).restrictedMovements;
+      if (Array.isArray(movements)) {
+        for (const mv of movements) {
+          if (
+            mv &&
+            typeof mv === 'object' &&
+            hasNonUuidString((mv as Record<string, unknown>).fundId)
+          ) {
+            return true;
+          }
+        }
+      }
+    }
+  }
+
+  if (checkItemFields(rec.projectPayments, ['projectId', 'accountId', 'transactionId'])) {
+    return true;
+  }
+  if (
+    checkItemFields(rec.projectExpenses, [
+      'projectId',
+      'accountId',
+      'transactionId',
+      'linkedReceivableId',
+    ])
+  ) {
+    return true;
+  }
+  if (
+    checkItemFields(rec.debts, [
+      'accountId',
+      'expenseCategoryId',
+      'transactionId',
+      'projectId',
+      'projectPaymentId',
+      'projectExpenseId',
+      'splitBillId',
+      'linkedDebtId',
+      'assetId',
+      'physicalLoanId',
+    ])
+  ) {
+    return true;
+  }
+  if (checkItemFields(rec.debtPayments, ['debtId', 'accountId', 'transactionId'])) return true;
+  if (checkItemFields(rec.obligations, ['reallocatedToGoalId', 'linkedDebtId'])) return true;
+  if (checkItemFields(rec.obligationLogs, ['obligationId', 'accountId', 'transactionId'])) {
+    return true;
+  }
+  if (
+    checkItemFields(rec.goalContributions, ['goalId', 'fromAccountId', 'toAccountId', 'transferId'])
+  ) {
+    return true;
+  }
+  if (
+    checkItemFields(rec.splitBills, [
+      'categoryId',
+      'accountId',
+      'paymentTransactionId',
+      'personalShareTransactionId',
+      'ledgerGroupId',
+    ])
+  ) {
+    return true;
+  }
+  if (
+    checkItemFields(rec.custodialFunds, [
+      'holdingAccountId',
+      'receiptTransactionId',
+      'ledgerGroupId',
+    ])
+  ) {
+    return true;
+  }
+  if (
+    checkItemFields(rec.projectAdvances, [
+      'projectId',
+      'holdingAccountId',
+      'receiptTransactionId',
+      'ledgerGroupId',
+    ])
+  ) {
+    return true;
+  }
+  if (
+    checkItemFields(rec.physicalAssets, [
+      'accountId',
+      'purchaseTransactionId',
+      'downPaymentTransactionId',
+      'purchaseDebtId',
+      'ledgerGroupId',
+    ])
+  ) {
+    return true;
+  }
+  if (
+    checkItemFields(rec.physicalItemLoans, ['assetId', 'lossRecordId', 'compensationDebtId'])
+  ) {
+    return true;
+  }
+  if (checkCollectionIds(rec.changeLogs)) return true;
+
+  if (Array.isArray(rec.debts)) {
+    for (const d of rec.debts) {
+      if (
+        d &&
+        typeof d === 'object' &&
+        checkItemFields((d as Record<string, unknown>).writeOffHistory, ['transactionId'])
+      ) {
+        return true;
+      }
+    }
+  }
+  if (Array.isArray(rec.splitBills)) {
+    for (const sb of rec.splitBills) {
+      if (
+        sb &&
+        typeof sb === 'object' &&
+        checkItemFields((sb as Record<string, unknown>).participants, ['debtId'])
+      ) {
+        return true;
+      }
+    }
+  }
+  if (Array.isArray(rec.custodialFunds)) {
+    for (const cf of rec.custodialFunds) {
+      if (!cf || typeof cf !== 'object') continue;
+      const cfRec = cf as Record<string, unknown>;
+      if (checkFundAllocations(cfRec.fundAllocations)) return true;
+      if (checkItemFields(cfRec.returns, ['accountId', 'transactionId'])) return true;
+    }
+  }
+  if (Array.isArray(rec.projectAdvances)) {
+    for (const pa of rec.projectAdvances) {
+      if (!pa || typeof pa !== 'object') continue;
+      const paRec = pa as Record<string, unknown>;
+      if (checkFundAllocations(paRec.fundAllocations)) return true;
+      if (checkItemFields(paRec.recognitions, ['transactionId'])) return true;
+      if (checkItemFields(paRec.refunds, ['accountId', 'transactionId'])) return true;
+      if (Array.isArray(paRec.recognitions)) {
+        for (const r of paRec.recognitions) {
+          if (r && typeof r === 'object') {
+            if (checkFundAllocations((r as Record<string, unknown>).allocationDeltas)) {
+              return true;
+            }
+          }
+        }
+      }
+    }
+  }
+  if (Array.isArray(rec.physicalAssets)) {
+    for (const pa of rec.physicalAssets) {
+      if (!pa || typeof pa !== 'object') continue;
+      const paRec = pa as Record<string, unknown>;
+      if (checkCollectionIds(paRec.conditionHistory)) return true;
+      if (checkItemFields(paRec.lossHistory, ['loanId', 'compensationDebtId'])) return true;
+      if (checkItemFields(paRec.recoveryHistory, ['lossRecordId'])) return true;
+      if (paRec.disposal && typeof paRec.disposal === 'object') {
+        const disp = paRec.disposal as Record<string, unknown>;
+        if (
+          hasNonUuidString(disp.saleAccountId) ||
+          hasNonUuidString(disp.saleTransactionId) ||
+          hasNonUuidString(disp.receivableId)
+        ) {
+          return true;
+        }
+      }
+    }
+  }
+  if (Array.isArray(rec.physicalItemLoans)) {
+    for (const loan of rec.physicalItemLoans) {
+      if (
+        loan &&
+        typeof loan === 'object' &&
+        checkCollectionIds((loan as Record<string, unknown>).conditionHistory)
+      ) {
+        return true;
+      }
+    }
+  }
+
+  if (rec.settings && typeof rec.settings === 'object') {
+    const rs = (rec.settings as Record<string, unknown>).reminderSettings;
+    if (rs && typeof rs === 'object') {
+      const rsRec = rs as Record<string, unknown>;
+      if (checkCollectionIds(rsRec.customReminders)) return true;
+      if (rsRec.reminderStates && typeof rsRec.reminderStates === 'object') {
+        for (const k of Object.keys(rsRec.reminderStates as Record<string, unknown>)) {
+          const m = REMINDER_ENTITY_KEY_RE.exec(k);
+          if (m && !isValidUUID(m[2])) {
+            return true;
+          }
+        }
+      }
+    }
+  }
+
+  if (Array.isArray(rec.changeLogs)) {
+    const uuidEntityTypes = new Set([
+      'account',
+      'category',
+      'transaction',
+      'debt',
+      'receivable',
+      'obligation',
+      'scheduled_expense',
+      'goal',
+      'split_bill',
+      'custodial',
+      'project_advance',
+      'physical_asset',
+      'physical_loan',
+    ]);
+    for (const cl of rec.changeLogs) {
+      if (!cl || typeof cl !== 'object') continue;
+      const clRec = cl as Record<string, unknown>;
+      if (
+        typeof clRec.entityType === 'string' &&
+        uuidEntityTypes.has(clRec.entityType) &&
+        typeof clRec.entityId === 'string'
+      ) {
+        const sentinelSet = NON_ENTITY_CHANGELOG_SENTINELS[clRec.entityType];
+        if (!(sentinelSet && sentinelSet.has(clRec.entityId)) && hasNonUuidString(clRec.entityId)) {
+          return true;
+        }
+      }
+    }
+  }
+
+  return false;
+}
+
+export function createUuidInitialFinanceState(nowDateISO?: string): FinanceState {
+  const initialLegacy = createInitialFinanceState(nowDateISO);
+  return migrateFinanceStateToUUID(initialLegacy, {
+    saveBackup: false,
+  }).migratedState;
+}
+

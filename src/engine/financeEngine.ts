@@ -26,6 +26,7 @@ import {
   startOfWeekISO,
   todayISO,
 } from '../utils/format';
+import { buildCategorySystemKeyLookup } from '../utils/systemEntityResolver';
 
 export interface AccountWithBalance extends Account {
   currentBalance: number;
@@ -738,12 +739,13 @@ export function computeFinanceSnapshot(
     daysInMonth(prevMonthStart)
   ).padStart(2, '0')}`;
 
+  const categoryKeyLookup = buildCategorySystemKeyLookup(state.categories);
   const validTransactions = state.transactions.filter((t) => !t.isVoided);
   const personalExpenseTx = validTransactions.filter(
     (t) =>
       t.type === 'expense' &&
-      t.categoryId !== 'cat-biz-ops' &&
-      t.categoryId !== 'cat-debt' &&
+      !categoryKeyLookup.isKey(t.categoryId, 'business_ops') &&
+      !categoryKeyLookup.isKey(t.categoryId, 'debt_payment') &&
       !t.excludeFromExpenseStats
   );
   const allIncomeTx = validTransactions.filter(
@@ -874,10 +876,11 @@ export function computeFinanceSnapshot(
   const categoryBudgets: CategoryBudgetStatus[] = state.categories
     .filter((c) => c.type === 'expense' && !c.isArchived)
     .map((cat) => {
+      const catKey = categoryKeyLookup.getKey(cat.id);
       const effectiveWeeklyLimit =
-        cat.id === 'cat-cig'
+        catKey === 'cigarette'
           ? state.settings.cigaretteWeeklyLimit
-          : cat.id === 'cat-hangout'
+          : catKey === 'hangout'
           ? state.settings.hangoutWeeklyLimit
           : cat.weeklyLimit;
 
@@ -910,9 +913,11 @@ export function computeFinanceSnapshot(
       };
     });
 
-  const cigWeek = weekExpenses.filter((t) => t.categoryId === 'cat-cig');
-  const cigPrevWeek = prevWeekExpenses.filter((t) => t.categoryId === 'cat-cig');
-  const cigMonth = monthExpenses.filter((t) => t.categoryId === 'cat-cig');
+  const cigWeek = weekExpenses.filter((t) => categoryKeyLookup.isKey(t.categoryId, 'cigarette'));
+  const cigPrevWeek = prevWeekExpenses.filter((t) =>
+    categoryKeyLookup.isKey(t.categoryId, 'cigarette')
+  );
+  const cigMonth = monthExpenses.filter((t) => categoryKeyLookup.isKey(t.categoryId, 'cigarette'));
   const cigWeeklySpent = cigWeek.reduce((s, t) => s + t.amount, 0);
   const cigMonthlySpent = cigMonth.reduce((s, t) => s + t.amount, 0);
   const cigLimit = state.settings.cigaretteWeeklyLimit;
@@ -929,9 +934,11 @@ export function computeFinanceSnapshot(
     level: getWarningLevel(cigWeeklySpent, cigLimit, inRecovery, cigWeeklySpent > 0),
   };
 
-  const hangWeek = weekExpenses.filter((t) => t.categoryId === 'cat-hangout');
-  const hangPrevWeek = prevWeekExpenses.filter((t) => t.categoryId === 'cat-hangout');
-  const hangMonth = monthExpenses.filter((t) => t.categoryId === 'cat-hangout');
+  const hangWeek = weekExpenses.filter((t) => categoryKeyLookup.isKey(t.categoryId, 'hangout'));
+  const hangPrevWeek = prevWeekExpenses.filter((t) =>
+    categoryKeyLookup.isKey(t.categoryId, 'hangout')
+  );
+  const hangMonth = monthExpenses.filter((t) => categoryKeyLookup.isKey(t.categoryId, 'hangout'));
   const hangWeeklySpent = hangWeek.reduce((s, t) => s + t.amount, 0);
   const hangMonthlySpent = hangMonth.reduce((s, t) => s + t.amount, 0);
   const hangLimit = state.settings.hangoutWeeklyLimit;
@@ -947,9 +954,15 @@ export function computeFinanceSnapshot(
     level: getWarningLevel(hangWeeklySpent, hangLimit, inRecovery, hangWeeklySpent > 0),
   };
 
-  const snackWeek = weekExpenses.filter((t) => t.categoryId === 'cat-other-exp');
-  const snackPrevWeek = prevWeekExpenses.filter((t) => t.categoryId === 'cat-other-exp');
-  const snackMonth = monthExpenses.filter((t) => t.categoryId === 'cat-other-exp');
+  const snackWeek = weekExpenses.filter((t) =>
+    categoryKeyLookup.isKey(t.categoryId, 'other_expense')
+  );
+  const snackPrevWeek = prevWeekExpenses.filter((t) =>
+    categoryKeyLookup.isKey(t.categoryId, 'other_expense')
+  );
+  const snackMonth = monthExpenses.filter((t) =>
+    categoryKeyLookup.isKey(t.categoryId, 'other_expense')
+  );
   const snackMonthlySpent = snackMonth.reduce((s, t) => s + t.amount, 0);
 
   const snackAnalysis: SnackAnalysis = {

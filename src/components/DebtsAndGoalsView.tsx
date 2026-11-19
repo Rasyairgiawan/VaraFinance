@@ -48,6 +48,11 @@ import {
   RecurringObligation,
 } from '../types/finance';
 import { formatDateID, formatIDR, generateId, todayISO } from '../utils/format';
+import {
+  matchesCategorySystemKey,
+  resolveSystemAccountId,
+  resolveSystemCategoryId,
+} from '../utils/systemEntityResolver';
 
 interface DebtsAndGoalsViewProps {
   state: FinanceState;
@@ -83,11 +88,39 @@ export const DebtsAndGoalsView: React.FC<DebtsAndGoalsViewProps> = ({
   const [debtDirection, setDebtDirection] = useState<DebtDirection>('payable');
   const [receivableType, setReceivableType] = useState<ReceivableKind>('personal_loan');
   const [debtReceiptType, setDebtReceiptType] = useState<DebtReceiptKind>('cash_received');
-  const [debtAccountId, setDebtAccountId] = useState('acc-cash');
-  const [debtDisburseAccountId, setDebtDisburseAccountId] = useState('acc-cash');
+  const defaultCashAccId = resolveSystemAccountId(
+    state.accounts,
+    'cash',
+    'acc-cash',
+    snapshot.activeAccounts[0]?.id,
+    { activeOnly: true }
+  );
+  const defaultSavingsAccId = resolveSystemAccountId(
+    state.accounts,
+    'savings',
+    'acc-savings',
+    '',
+    { activeOnly: true }
+  );
+  const defaultInvestAccId = resolveSystemAccountId(
+    state.accounts,
+    'investment',
+    'acc-invest',
+    '',
+    { activeOnly: true }
+  );
+  const defaultFoodCategoryId = resolveSystemCategoryId(
+    state.categories,
+    'food',
+    'cat-food',
+    'expense'
+  );
+
+  const [debtAccountId, setDebtAccountId] = useState(defaultCashAccId);
+  const [debtDisburseAccountId, setDebtDisburseAccountId] = useState(defaultCashAccId);
   const [linkedBorrowLendMode, setLinkedBorrowLendMode] = useState<'direct_passthrough' | 'via_account'>('direct_passthrough');
   const [borrowerName, setBorrowerName] = useState('');
-  const [debtExpenseCategoryId, setDebtExpenseCategoryId] = useState('cat-food');
+  const [debtExpenseCategoryId, setDebtExpenseCategoryId] = useState(defaultFoodCategoryId);
   const [debtProjectId, setDebtProjectId] = useState('');
   const [debtRevenueAlreadyRecorded, setDebtRevenueAlreadyRecorded] = useState(false);
   const [debtDate, setDebtDate] = useState(todayISO());
@@ -103,7 +136,7 @@ export const DebtsAndGoalsView: React.FC<DebtsAndGoalsViewProps> = ({
 
   const [repayDebtId, setRepayDebtId] = useState<string | null>(null);
   const [repayAmount, setRepayAmount] = useState('');
-  const [repayAccId, setRepayAccId] = useState('acc-cash');
+  const [repayAccId, setRepayAccId] = useState(defaultCashAccId);
   const [repayDate, setRepayDate] = useState(todayISO());
   const [repayNotes, setRepayNotes] = useState('');
   const [writeOffDebtId, setWriteOffDebtId] = useState<string | null>(null);
@@ -140,7 +173,7 @@ export const DebtsAndGoalsView: React.FC<DebtsAndGoalsViewProps> = ({
     null
   );
   const [obActionAmt, setObActionAmt] = useState('');
-  const [obPayAccId, setObPayAccId] = useState('acc-cash');
+  const [obPayAccId, setObPayAccId] = useState(defaultCashAccId);
   const [reallocGoalMap, setReallocGoalMap] = useState<Record<string, string>>({});
 
   // Goal forms
@@ -153,12 +186,15 @@ export const DebtsAndGoalsView: React.FC<DebtsAndGoalsViewProps> = ({
 
   const [contribGoalId, setContribGoalId] = useState<string | null>(null);
   const [contribAmt, setContribAmt] = useState('');
-  const [contribFromAcc, setContribFromAcc] = useState('acc-cash');
-  const [contribToAcc, setContribToAcc] = useState('acc-savings');
+  const [contribFromAcc, setContribFromAcc] = useState(defaultCashAccId);
+  const [contribToAcc, setContribToAcc] = useState(defaultSavingsAccId);
 
   const activeAccounts = snapshot.activeAccounts;
   const activeExpenseCategories = state.categories.filter(
-    (c) => c.type === 'expense' && !c.isArchived && c.id !== 'cat-debt'
+    (c) =>
+      c.type === 'expense' &&
+      !c.isArchived &&
+      !matchesCategorySystemKey(c.id, state.categories, 'debt_payment', 'cat-debt')
   );
   const activeProjects = state.projects.filter((p) => !p.isArchived);
 
@@ -169,12 +205,24 @@ export const DebtsAndGoalsView: React.FC<DebtsAndGoalsViewProps> = ({
     (c) => c.id === debtExpenseCategoryId
   )
     ? debtExpenseCategoryId
-    : activeExpenseCategories.find((c) => c.id === 'cat-food')?.id ??
+    : activeExpenseCategories.find((c) =>
+        matchesCategorySystemKey(c.id, state.categories, 'food', 'cat-food')
+      )?.id ??
       activeExpenseCategories[0]?.id ??
       '';
   const resolvedRepayAccId = activeAccounts.some((a) => a.id === repayAccId)
     ? repayAccId
     : activeAccounts[0]?.id ?? '';
+  const resolvedObPayAccId = activeAccounts.some((a) => a.id === obPayAccId)
+    ? obPayAccId
+    : defaultCashAccId;
+  const resolvedContribFromAcc = activeAccounts.some((a) => a.id === contribFromAcc)
+    ? contribFromAcc
+    : activeAccounts.find((a) => !a.isProtected)?.id ?? defaultCashAccId;
+  const resolvedContribToAcc =
+    contribToAcc === '' || activeAccounts.some((a) => a.id === contribToAcc)
+      ? contribToAcc
+      : defaultSavingsAccId;
 
   const openNewDebtForm = () => {
     setDebtFormError(null);
@@ -191,12 +239,14 @@ export const DebtsAndGoalsView: React.FC<DebtsAndGoalsViewProps> = ({
     setDebtDate(todayISO());
     setDebtProjectId('');
     setDebtRevenueAlreadyRecorded(false);
-    setDebtAccountId(activeAccounts[0]?.id ?? 'acc-cash');
-    setDebtDisburseAccountId(activeAccounts[0]?.id ?? 'acc-cash');
+    setDebtAccountId(activeAccounts[0]?.id ?? defaultCashAccId);
+    setDebtDisburseAccountId(activeAccounts[0]?.id ?? defaultCashAccId);
     setDebtExpenseCategoryId(
-      activeExpenseCategories.find((c) => c.id === 'cat-food')?.id ??
+      activeExpenseCategories.find((c) =>
+        matchesCategorySystemKey(c.id, state.categories, 'food', 'cat-food')
+      )?.id ??
         activeExpenseCategories[0]?.id ??
-        'cat-food'
+        defaultFoodCategoryId
     );
     debtSubmitKeyRef.current = generateId();
     debtSubmittingLockRef.current = false;
@@ -503,7 +553,7 @@ export const DebtsAndGoalsView: React.FC<DebtsAndGoalsViewProps> = ({
           payObligationAction(state, {
             obligationId: obAction.id,
             amount: amt,
-            accountId: obPayAccId,
+            accountId: resolvedObPayAccId,
             date: todayISO(),
           })
         );
@@ -542,8 +592,8 @@ export const DebtsAndGoalsView: React.FC<DebtsAndGoalsViewProps> = ({
       contributeToGoalAction(state, {
         goalId: contribGoalId,
         amount: amt,
-        fromAccountId: contribFromAcc,
-        toAccountId: contribToAcc || undefined,
+        fromAccountId: resolvedContribFromAcc,
+        toAccountId: resolvedContribToAcc || undefined,
         date: todayISO(),
       })
     );
@@ -1190,13 +1240,25 @@ export const DebtsAndGoalsView: React.FC<DebtsAndGoalsViewProps> = ({
                               const preferBiz =
                                 isReceivable &&
                                 (d.receivableType === 'project_sales' || !d.receivableType)
-                                  ? activeAccounts.find((a) => a.id === 'acc-business')
+                                  ? activeAccounts.find(
+                                      (a) =>
+                                        a.id ===
+                                        resolveSystemAccountId(
+                                          activeAccounts,
+                                          'business',
+                                          'acc-business',
+                                          ''
+                                        )
+                                    )
                                   : undefined;
                               const preferLinked = d.accountId
                                 ? activeAccounts.find((a) => a.id === d.accountId)
                                 : undefined;
                               setRepayAccId(
-                                preferBiz?.id ?? preferLinked?.id ?? activeAccounts[0]?.id ?? 'acc-cash'
+                                preferBiz?.id ??
+                                  preferLinked?.id ??
+                                  activeAccounts[0]?.id ??
+                                  defaultCashAccId
                               );
                             }}
                             className={`rounded-lg px-3 py-1.5 text-xs font-semibold text-white ${
@@ -1890,8 +1952,8 @@ export const DebtsAndGoalsView: React.FC<DebtsAndGoalsViewProps> = ({
                                 reallocateCompletedObligationAction(state, {
                                   obligationId: ob.id,
                                   goalId: selectedGoalId,
-                                  fromAccountId: 'acc-cash',
-                                  toAccountId: 'acc-savings',
+                                  fromAccountId: defaultCashAccId,
+                                  toAccountId: defaultSavingsAccId || defaultCashAccId,
                                   date: todayISO(),
                                 })
                               )
@@ -1925,7 +1987,7 @@ export const DebtsAndGoalsView: React.FC<DebtsAndGoalsViewProps> = ({
                           />
                           {obAction.mode === 'pay' && (
                             <select
-                              value={obPayAccId}
+                              value={resolvedObPayAccId}
                               onChange={(e) => setObPayAccId(e.target.value)}
                               className="rounded-lg border border-slate-300 bg-white px-3 py-2 text-xs"
                             >
@@ -2178,7 +2240,7 @@ export const DebtsAndGoalsView: React.FC<DebtsAndGoalsViewProps> = ({
                           className="rounded-lg border border-slate-300 bg-white px-3 py-2 text-xs font-mono-num"
                         />
                         <select
-                          value={contribFromAcc}
+                          value={resolvedContribFromAcc}
                           onChange={(e) => setContribFromAcc(e.target.value)}
                           className="rounded-lg border border-slate-300 bg-white px-2.5 py-2 text-xs"
                         >
@@ -2191,12 +2253,20 @@ export const DebtsAndGoalsView: React.FC<DebtsAndGoalsViewProps> = ({
                             ))}
                         </select>
                         <select
-                          value={contribToAcc}
+                          value={resolvedContribToAcc}
                           onChange={(e) => setContribToAcc(e.target.value)}
                           className="rounded-lg border border-slate-300 bg-white px-2.5 py-2 text-xs"
                         >
-                          <option value="acc-savings">Pindah ke Tabungan Terlindungi</option>
-                          <option value="acc-invest">Pindah ke Akun Investasi</option>
+                          {defaultSavingsAccId && (
+                            <option value={defaultSavingsAccId}>
+                              Pindah ke Tabungan Terlindungi
+                            </option>
+                          )}
+                          {defaultInvestAccId && (
+                            <option value={defaultInvestAccId}>
+                              Pindah ke Akun Investasi
+                            </option>
+                          )}
                           <option value="">Kunci Virtual di Dompet/Bank</option>
                         </select>
                       </div>

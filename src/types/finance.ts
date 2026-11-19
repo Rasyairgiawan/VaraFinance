@@ -133,11 +133,27 @@ export interface SecurityPreferences {
   autoLockMinutes: number; // 0 = disabled, otherwise minutes of inactivity
 }
 
+export interface AccountLinkRecord {
+  localUserId: string;
+  cloudUserId: string;
+  cloudEmail?: string;
+  cloudUsername?: string;
+  linkedAt: string;
+  updatedAt: string;
+  status: 'linked';
+}
+
 export interface AuthUserSummary {
   userId: string;
   username: string;
   email?: string;
   mode: AuthProviderMode;
+  localUserId?: string;
+  cloudUserId?: string;
+  linkedLocalUserId?: string;
+  linkedCloudUserId?: string;
+  linkedCloudEmail?: string;
+  isLinked?: boolean;
   pinConfigured: boolean;
   pinEnabled: boolean;
   requirePinOnReopen: boolean;
@@ -151,6 +167,9 @@ export interface AuthSession {
   username: string;
   email?: string;
   mode: AuthProviderMode;
+  localUserId?: string;
+  cloudUserId?: string;
+  storageUserId?: string;
   deviceId: string;
   issuedAt: string;
   lastActiveAt: string;

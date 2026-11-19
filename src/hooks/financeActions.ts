@@ -1,5 +1,9 @@
 import { computeAccountBalances, evaluateDisciplineForExpense } from '../engine/financeEngine';
-import { DEFAULT_PROJECTION_ASSUMPTIONS, GENERAL_CATEGORY_PRESETS } from '../data/initialProfile';
+import {
+  DEFAULT_PROJECTION_ASSUMPTIONS,
+  GENERAL_CATEGORY_PRESETS,
+  SYSTEM_CATEGORY_KEY_MAP,
+} from '../data/initialProfile';
 import {
   Account,
   AccountTransfer,
@@ -52,6 +56,11 @@ import {
   UserFinancialSettings,
 } from '../types/finance';
 import { addDaysISO, formatIDR, generateId, todayISO } from '../utils/format';
+import {
+  matchesCategorySystemKey,
+  resolveSystemAccountId,
+  resolveSystemCategoryId,
+} from '../utils/systemEntityResolver';
 
 function withSyncBump(state: FinanceState): FinanceState {
   const prev = state.syncMeta;
@@ -601,7 +610,8 @@ export function getTransactionLinkInfo(
 function reconcileNoSpendConfirmationsForDates(
   transactions: Transaction[],
   prevConfirmations: NoSpendConfirmation[] | undefined,
-  dates: string[]
+  dates: string[],
+  categories: readonly Category[] = []
 ): NoSpendConfirmation[] {
   const uniqueDates = Array.from(new Set(dates.filter(Boolean)));
   if (uniqueDates.length === 0) return prevConfirmations ?? [];
@@ -613,8 +623,8 @@ function reconcileNoSpendConfirmationsForDates(
         !t.isVoided &&
         t.type === 'expense' &&
         !t.excludeFromExpenseStats &&
-        t.categoryId !== 'cat-biz-ops' &&
-        t.categoryId !== 'cat-debt' &&
+        !matchesCategorySystemKey(t.categoryId, categories, 'business_ops', 'cat-biz-ops') &&
+        !matchesCategorySystemKey(t.categoryId, categories, 'debt_payment', 'cat-debt') &&
         t.isDiscretionary &&
         t.date === date
     );
@@ -748,7 +758,8 @@ export function updateTransactionAction(
   const nextNoSpend = reconcileNoSpendConfirmationsForDates(
     nextTransactions,
     state.noSpendConfirmations,
-    [prevTx.date, nextDate]
+    [prevTx.date, nextDate],
+    state.categories
   );
 
   return appendChangeLog(
@@ -901,7 +912,8 @@ export function voidTransactionAction(
     const nextNoSpend = reconcileNoSpendConfirmationsForDates(
       nextTransactions,
       state.noSpendConfirmations,
-      [target.date]
+      [target.date],
+      state.categories
     );
 
     return appendChangeLog(
@@ -1223,7 +1235,8 @@ export function voidTransactionAction(
   const nextNoSpend = reconcileNoSpendConfirmationsForDates(
     nextTransactions,
     state.noSpendConfirmations,
-    [target.date]
+    [target.date],
+    state.categories
   );
 
   return appendChangeLog(
@@ -1266,7 +1279,8 @@ export function deleteTransactionAction(state: FinanceState, id: string): Financ
   const nextNoSpend = reconcileNoSpendConfirmationsForDates(
     nextTransactions,
     state.noSpendConfirmations,
-    [target.date]
+    [target.date],
+    state.categories
   );
 
   return appendChangeLog(
@@ -1618,8 +1632,16 @@ export function addProjectPaymentAction(
   let transactionId: string | undefined;
   let nextState = state;
 
+  const defaultBusinessAccId = resolveSystemAccountId(
+    state.accounts,
+    'business',
+    'acc-business',
+    undefined,
+    { activeOnly: true }
+  );
+
   if (input.status === 'received') {
-    const targetAccId = input.accountId || 'acc-business';
+    const targetAccId = input.accountId || defaultBusinessAccId;
     const labelMap = {
       full: 'Pelunasan Penuh',
       dp: 'Uang Muka (DP)',
@@ -1629,7 +1651,12 @@ export function addProjectPaymentAction(
     const res = addTransactionAction(nextState, {
       type: 'income',
       amount: input.amount,
-      categoryId: 'cat-income-freelance',
+      categoryId: resolveSystemCategoryId(
+        state.categories,
+        'income_freelance',
+        'cat-income-freelance',
+        'income'
+      ),
       accountId: targetAccId,
       date: input.date,
       description: `${labelMap[input.paymentType]} — ${project.projectName}`,
@@ -1649,7 +1676,7 @@ export function addProjectPaymentAction(
     status: input.status,
     expectedDate: input.status === 'expected' ? input.date : undefined,
     receivedDate: input.status === 'received' ? input.date : undefined,
-    accountId: input.status === 'received' ? input.accountId || 'acc-business' : undefined,
+    accountId: input.status === 'received' ? input.accountId || defaultBusinessAccId : undefined,
     transactionId,
     notes: input.notes?.trim() || undefined,
     createdAt: new Date().toISOString(),
@@ -1684,7 +1711,12 @@ export function markProjectPaymentReceivedAction(
     const res = addTransactionAction(state, {
       type: 'income',
       amount: payment.amount,
-      categoryId: 'cat-income-freelance',
+      categoryId: resolveSystemCategoryId(
+        state.categories,
+        'income_freelance',
+        'cat-income-freelance',
+        'income'
+      ),
       accountId,
       date: receivedDate,
       description: `Pembayaran Proyek — ${project?.projectName ?? 'Freelance'}`,
@@ -1711,7 +1743,14 @@ export function markProjectPaymentReceivedAction(
   const res = addTransactionAction(state, {
     type: 'income',
     amount: payment.amount,
-    categoryId: projectRevenueAlreadyRecorded ? 'cat-income-other' : 'cat-income-freelance',
+    categoryId: projectRevenueAlreadyRecorded
+      ? resolveSystemCategoryId(state.categories, 'income_other', 'cat-income-other', 'income')
+      : resolveSystemCategoryId(
+          state.categories,
+          'income_freelance',
+          'cat-income-freelance',
+          'income'
+        ),
     accountId,
     date: receivedDate,
     description: `Pembayaran Proyek — ${project?.projectName ?? 'Freelance'}`,
@@ -1838,7 +1877,12 @@ export function addProjectExpenseAction(
     const res = addTransactionAction(state, {
       type: 'expense',
       amount: roundedAmount,
-      categoryId: 'cat-biz-ops',
+      categoryId: resolveSystemCategoryId(
+        state.categories,
+        'business_ops',
+        'cat-biz-ops',
+        'expense'
+      ),
       accountId: input.accountId,
       date: input.date,
       description: `Biaya Proyek (${project.projectName}): ${input.description}`,
@@ -1894,7 +1938,7 @@ export function addProjectExpenseAction(
     id: txId,
     type: 'expense',
     amount: roundedAmount,
-    categoryId: 'cat-debt',
+    categoryId: resolveSystemCategoryId(state.categories, 'debt_payment', 'cat-debt', 'expense'),
     accountId: sourceAcc.id,
     date: input.date,
     description:
@@ -2065,7 +2109,12 @@ export function addDebtAction(
         id: generateId(),
         type: 'expense',
         amount: roundedAmount,
-        categoryId: 'cat-debt',
+        categoryId: resolveSystemCategoryId(
+          state.categories,
+          'debt_payment',
+          'cat-debt',
+          'expense'
+        ),
         accountId: sourceAcc.id,
         date: txDate,
         description: isFriendAdvance
@@ -2121,7 +2170,12 @@ export function addDebtAction(
         id: generateId(),
         type: 'income',
         amount: roundedAmount,
-        categoryId: 'cat-income-other',
+        categoryId: resolveSystemCategoryId(
+          state.categories,
+          'income_other',
+          'cat-income-other',
+          'income'
+        ),
         accountId: targetAcc.id,
         date: txDate,
         description: `Pinjaman Diterima dari ${cleanCreditor}`,
@@ -2368,7 +2422,7 @@ export function repayDebtAction(
     id: generateId(),
     type: 'expense',
     amount: payAmount,
-    categoryId: 'cat-debt',
+    categoryId: resolveSystemCategoryId(state.categories, 'debt_payment', 'cat-debt', 'expense'),
     accountId: sourceAcc.id,
     date: input.date,
     description: `Cicil/Bayar Utang: ${debt.creditor}`,
@@ -2510,7 +2564,15 @@ export function collectReceivableAction(
     id: generateId(),
     type: 'income',
     amount: collectAmount,
-    categoryId: isProjectSalesReceivable && !excludeFromIncomeStats ? 'cat-income-freelance' : 'cat-income-other',
+    categoryId:
+      isProjectSalesReceivable && !excludeFromIncomeStats
+        ? resolveSystemCategoryId(
+            state.categories,
+            'income_freelance',
+            'cat-income-freelance',
+            'income'
+          )
+        : resolveSystemCategoryId(state.categories, 'income_other', 'cat-income-other', 'income'),
     accountId: targetAcc.id,
     date: input.date,
     description: isReimbursement
@@ -3054,7 +3116,12 @@ export function payObligationAction(
   const res = addTransactionAction(state, {
     type: 'expense',
     amount: input.amount,
-    categoryId: 'cat-college',
+    categoryId: resolveSystemCategoryId(
+      state.categories,
+      'college_obligation',
+      'cat-college',
+      'expense'
+    ),
     accountId: input.accountId,
     date: input.date,
     description: `Bayar ${ob.kind === 'scheduled_expense' ? 'Tagihan' : 'Kewajiban'}: ${ob.name}`,
@@ -3460,7 +3527,10 @@ export function reconcileAccountAction(
     id: generateId(),
     type: delta > 0 ? 'income' : 'expense',
     amount: Math.abs(delta),
-    categoryId: delta > 0 ? 'cat-income-other' : 'cat-other-exp',
+    categoryId:
+      delta > 0
+        ? resolveSystemCategoryId(state.categories, 'income_other', 'cat-income-other', 'income')
+        : resolveSystemCategoryId(state.categories, 'other_expense', 'cat-other-exp', 'expense'),
     accountId: acc.id,
     date,
     description: `Rekonsiliasi Saldo: ${acc.name}`,
@@ -3562,7 +3632,7 @@ export function addCategoryAction(
     throw new Error(`Kategori "${cleanName}" sudah ada.`);
   }
   const cat: Category = {
-    id: `cat-${generateId()}`,
+    id: generateId(),
     name: cleanName,
     type: input.type,
     classification: input.type === 'income' ? 'income' : input.classification,
@@ -3633,9 +3703,20 @@ export function archiveCategoryAction(state: FinanceState, categoryId: string): 
 
 export function installGeneralPresetCategoriesAction(state: FinanceState): FinanceState {
   const existingIds = new Set(state.categories.map((c) => c.id));
-  const additions: Category[] = GENERAL_CATEGORY_PRESETS.filter((p) => !existingIds.has(p.id)).map(
-    (p) => ({ ...p, isSystem: false, isArchived: false })
+  const existingSystemKeys = new Set(
+    state.categories
+      .map((c) => c.systemKey ?? SYSTEM_CATEGORY_KEY_MAP[c.id])
+      .filter((k): k is string => Boolean(k))
   );
+  const existingTypeNames = new Set(
+    state.categories.map((c) => `${c.type}:${c.name.trim().toLowerCase()}`)
+  );
+  const additions: Category[] = GENERAL_CATEGORY_PRESETS.filter(
+    (p) =>
+      !existingIds.has(p.id) &&
+      !(p.systemKey && existingSystemKeys.has(p.systemKey)) &&
+      !existingTypeNames.has(`${p.type}:${p.name.trim().toLowerCase()}`)
+  ).map((p) => ({ ...p, id: generateId(), isSystem: false, isArchived: false }));
   if (additions.length === 0) return state;
   return appendChangeLog(
     { ...state, categories: [...state.categories, ...additions] },
@@ -3813,8 +3894,9 @@ export function updateSettingsAction(
     ...state,
     settings: nextSettings,
     categories: state.categories.map((c) => {
-      if (c.id === 'cat-cig') return { ...c, weeklyLimit: nextSettings.cigaretteWeeklyLimit };
-      if (c.id === 'cat-hangout') return { ...c, weeklyLimit: nextSettings.hangoutWeeklyLimit };
+      const sysKey = c.systemKey ?? SYSTEM_CATEGORY_KEY_MAP[c.id];
+      if (sysKey === 'cigarette') return { ...c, weeklyLimit: nextSettings.cigaretteWeeklyLimit };
+      if (sysKey === 'hangout') return { ...c, weeklyLimit: nextSettings.hangoutWeeklyLimit };
       return c;
     }),
     goals: state.goals.map((g) => {
@@ -3911,7 +3993,12 @@ export function receiveCustodialFundAction(
     id: txId,
     type: 'income',
     amount: roundedAmount,
-    categoryId: 'cat-income-other',
+    categoryId: resolveSystemCategoryId(
+      state.categories,
+      'income_other',
+      'cat-income-other',
+      'income'
+    ),
     accountId: targetAcc.id,
     date: txDate,
     description: `Terima Titipan: ${cleanCounterparty}`,
@@ -4032,7 +4119,12 @@ export function returnCustodialFundAction(
     id: txId,
     type: 'expense',
     amount: roundedAmount,
-    categoryId: 'cat-other-exp',
+    categoryId: resolveSystemCategoryId(
+      state.categories,
+      'other_expense',
+      'cat-other-exp',
+      'expense'
+    ),
     accountId: sourceAcc.id,
     date: txDate,
     description: `Kembalikan Titipan ke ${fund.counterparty}`,
@@ -4215,7 +4307,12 @@ export function receiveProjectAdvanceAction(
     id: txId,
     type: 'income',
     amount: roundedAmount,
-    categoryId: 'cat-income-other',
+    categoryId: resolveSystemCategoryId(
+      state.categories,
+      'income_other',
+      'cat-income-other',
+      'income'
+    ),
     accountId: targetAcc.id,
     date: txDate,
     description: `Terima DP Proyek — ${project.projectName}`,
@@ -4350,7 +4447,12 @@ export function recognizeProjectAdvanceAction(
     id: txId,
     type: 'income',
     amount: roundedAmount,
-    categoryId: 'cat-income-freelance',
+    categoryId: resolveSystemCategoryId(
+      state.categories,
+      'income_freelance',
+      'cat-income-freelance',
+      'income'
+    ),
     accountId: refAccountId,
     date: txDate,
     description: `Pengakuan Pendapatan DP — ${project?.projectName ?? advance.clientName}`,
@@ -4485,7 +4587,12 @@ export function refundProjectAdvanceAction(
     id: txId,
     type: 'expense',
     amount: roundedAmount,
-    categoryId: 'cat-other-exp',
+    categoryId: resolveSystemCategoryId(
+      state.categories,
+      'other_expense',
+      'cat-other-exp',
+      'expense'
+    ),
     accountId: sourceAcc.id,
     date: txDate,
     description: `Pengembalian DP Proyek — ${project?.projectName ?? advance.clientName}`,
@@ -4750,8 +4857,10 @@ export function writeOffReceivableAction(
       id: writeOffTxId,
       type: 'expense',
       amount: writeOffAmount,
-      categoryId: item.projectId ? 'cat-biz-ops' : 'cat-other-exp',
-      accountId: refAcc?.id ?? 'acc-cash',
+      categoryId: item.projectId
+        ? resolveSystemCategoryId(state.categories, 'business_ops', 'cat-biz-ops', 'expense')
+        : resolveSystemCategoryId(state.categories, 'other_expense', 'cat-other-exp', 'expense'),
+      accountId: refAcc?.id ?? resolveSystemAccountId(state.accounts, 'cash', 'acc-cash'),
       date: txDate,
       description: `Penghapusbukuan Piutang (${item.creditor})`,
       notes: `${cleanReason} (Non-kas; pendapatan sebelumnya telah diakui)`,
@@ -4909,7 +5018,7 @@ export function recoverReceivableAction(
       input.accountId ||
       item.accountId ||
       nextState.accounts.find((a) => (a.status ?? 'active') === 'active')?.id ||
-      'acc-cash';
+      resolveSystemAccountId(nextState.accounts, 'cash', 'acc-cash');
     nextState = collectReceivableAction(nextState, {
       debtId: item.id,
       amount: input.collectAmount,
@@ -5191,7 +5300,8 @@ export function createSplitBillAction(
   const nextNoSpend = reconcileNoSpendConfirmationsForDates(
     nextTransactions,
     state.noSpendConfirmations,
-    [txDate]
+    [txDate],
+    state.categories
   );
 
   const nextState = appendChangeLog(
@@ -5292,7 +5402,8 @@ export function voidSplitBillAction(
   const nextNoSpend = reconcileNoSpendConfirmationsForDates(
     nextTransactions,
     state.noSpendConfirmations,
-    [sb.date]
+    [sb.date],
+    state.categories
   );
 
   return appendChangeLog(
@@ -5422,7 +5533,12 @@ export function createLinkedBorrowLendAction(
       id: receiptTxId,
       type: 'income',
       amount: roundedAmount,
-      categoryId: 'cat-income-other',
+      categoryId: resolveSystemCategoryId(
+        state.categories,
+        'income_other',
+        'cat-income-other',
+        'income'
+      ),
       accountId: receiveAcc.id,
       date: txDate,
       description: `Pinjaman Diterima dari ${cleanLender} (untuk ${cleanBorrower})`,
@@ -5445,7 +5561,12 @@ export function createLinkedBorrowLendAction(
       id: disburseTxId,
       type: 'expense',
       amount: roundedAmount,
-      categoryId: 'cat-debt',
+      categoryId: resolveSystemCategoryId(
+        state.categories,
+        'debt_payment',
+        'cat-debt',
+        'expense'
+      ),
       accountId: disburseAcc.id,
       date: txDate,
       description: `Pinjaman Diteruskan ke ${cleanBorrower} (sumber: ${cleanLender})`,
@@ -5533,7 +5654,7 @@ export function createLinkedBorrowLendAction(
     id: txId,
     type: 'expense',
     amount: roundedAmount,
-    categoryId: 'cat-debt',
+    categoryId: resolveSystemCategoryId(state.categories, 'debt_payment', 'cat-debt', 'expense'),
     accountId: refAcc.id,
     date: txDate,
     description: `Teruskan Pinjaman: ${cleanLender} → ${cleanBorrower}`,
@@ -5698,7 +5819,12 @@ export function purchaseAssetAction(
       id: txId,
       type: 'expense',
       amount: totalValue,
-      categoryId: 'cat-other-exp',
+      categoryId: resolveSystemCategoryId(
+        state.categories,
+        'other_expense',
+        'cat-other-exp',
+        'expense'
+      ),
       accountId: sourceAcc.id,
       date: txDate,
       description: `Beli Aset: ${cleanName}`,
@@ -5808,7 +5934,7 @@ export function purchaseAssetAction(
     id: txId,
     type: 'expense',
     amount: dpAmount > 0 ? dpAmount : totalValue,
-    categoryId: 'cat-debt',
+    categoryId: resolveSystemCategoryId(state.categories, 'debt_payment', 'cat-debt', 'expense'),
     accountId: txAccountId,
     date: txDate,
     description:
@@ -6045,7 +6171,12 @@ export function sellAssetAction(
       id: txId,
       type: 'income',
       amount: roundedSale,
-      categoryId: 'cat-income-other',
+      categoryId: resolveSystemCategoryId(
+        state.categories,
+        'income_other',
+        'cat-income-other',
+        'income'
+      ),
       accountId: targetAcc.id,
       date: soldDate,
       description: `Jual Aset: ${asset.name}`,
@@ -6122,7 +6253,12 @@ export function sellAssetAction(
     id: txId,
     type: 'income',
     amount: roundedSale,
-    categoryId: 'cat-income-other',
+    categoryId: resolveSystemCategoryId(
+      state.categories,
+      'income_other',
+      'cat-income-other',
+      'income'
+    ),
     accountId: refAcc.id,
     date: soldDate,
     description: `Jual Aset (Piutang ke ${cleanBuyer}): ${asset.name}`,

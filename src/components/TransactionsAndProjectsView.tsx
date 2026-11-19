@@ -36,6 +36,7 @@ import {
 } from '../hooks/financeActions';
 import { Account, FinanceState, ProjectExpenseKind, Transaction } from '../types/finance';
 import { formatDateID, formatIDR, todayISO } from '../utils/format';
+import { resolveSystemAccountId } from '../utils/systemEntityResolver';
 import {
   getTransactionAccountDisplay,
   getTransactionNatureBadge,
@@ -85,8 +86,31 @@ export const TransactionsAndProjectsView: React.FC<TransactionsAndProjectsViewPr
   const [projAmount, setProjAmount] = useState('');
   const [projDesc, setProjDesc] = useState('');
   const [projDate, setProjDate] = useState(todayISO());
-  const [projAccountId, setProjAccountId] = useState('acc-business');
-  const [projTargetPersonalAccId, setProjTargetPersonalAccId] = useState('acc-bank');
+  const defaultBusinessAccId = resolveSystemAccountId(
+    state.accounts,
+    'business',
+    'acc-business',
+    snapshot.activeAccounts[0]?.id,
+    { activeOnly: true }
+  );
+  const defaultPersonalBankAccId = resolveSystemAccountId(
+    state.accounts,
+    'bank_personal',
+    'acc-bank',
+    snapshot.activeAccounts.find((a) => !a.isBusiness)?.id ?? snapshot.activeAccounts[0]?.id,
+    { activeOnly: true }
+  );
+
+  const [projAccountId, setProjAccountId] = useState(defaultBusinessAccId);
+  const [projTargetPersonalAccId, setProjTargetPersonalAccId] = useState(defaultPersonalBankAccId);
+  const resolvedProjAccountId = snapshot.activeAccounts.some((a) => a.id === projAccountId)
+    ? projAccountId
+    : defaultBusinessAccId;
+  const resolvedProjTargetPersonalAccId = snapshot.activeAccounts.some(
+    (a) => a.id === projTargetPersonalAccId && !a.isBusiness
+  )
+    ? projTargetPersonalAccId
+    : defaultPersonalBankAccId;
   const [projExpenseKind, setProjExpenseKind] = useState<ProjectExpenseKind>('project_cost');
   const [projReimbCreditor, setProjReimbCreditor] = useState('');
   const [projReimbDueDate, setProjReimbDueDate] = useState('');
@@ -178,7 +202,7 @@ export const TransactionsAndProjectsView: React.FC<TransactionsAndProjectsViewPr
           amount: amt,
           status: projPayStatus,
           date: projDate,
-          accountId: projAccountId,
+          accountId: resolvedProjAccountId,
           notes: projDesc,
         });
         onCommit(next);
@@ -188,7 +212,7 @@ export const TransactionsAndProjectsView: React.FC<TransactionsAndProjectsViewPr
           description: projDesc || 'Biaya operasional proyek',
           amount: amt,
           date: projDate,
-          accountId: projAccountId,
+          accountId: resolvedProjAccountId,
           expenseKind: projExpenseKind,
           creditor: projReimbCreditor || undefined,
           dueDate: projReimbDueDate || undefined,
@@ -198,8 +222,8 @@ export const TransactionsAndProjectsView: React.FC<TransactionsAndProjectsViewPr
         const next = distributeProjectPersonalShareAction(state, {
           projectId: activeProjAction.projectId,
           amount: amt,
-          fromAccountId: 'acc-business',
-          toAccountId: projTargetPersonalAccId,
+          fromAccountId: defaultBusinessAccId,
+          toAccountId: resolvedProjTargetPersonalAccId,
           date: projDate,
         });
         onCommit(next);
@@ -967,7 +991,7 @@ export const TransactionsAndProjectsView: React.FC<TransactionsAndProjectsViewPr
                                 <option value="pass_through">Biaya Pass-Through Klien (Tidak Mengurangi Profit / Omzet)</option>
                               </select>
                               <select
-                                value={projAccountId}
+                                value={resolvedProjAccountId}
                                 onChange={(e) => setProjAccountId(e.target.value)}
                                 className="rounded-lg border border-slate-300 bg-white px-3 py-2 text-xs"
                               >
@@ -999,7 +1023,7 @@ export const TransactionsAndProjectsView: React.FC<TransactionsAndProjectsViewPr
                           )}
                           {activeProjAction.mode === 'distribute' && (
                             <select
-                              value={projTargetPersonalAccId}
+                              value={resolvedProjTargetPersonalAccId}
                               onChange={(e) => setProjTargetPersonalAccId(e.target.value)}
                               className="rounded-lg border border-slate-300 bg-white px-3 py-2 text-xs sm:col-span-2"
                             >
@@ -1087,7 +1111,7 @@ export const TransactionsAndProjectsView: React.FC<TransactionsAndProjectsViewPr
                                         markProjectPaymentReceivedAction(
                                           state,
                                           pay.id,
-                                          'acc-business',
+                                          defaultBusinessAccId,
                                           todayISO()
                                         )
                                       )

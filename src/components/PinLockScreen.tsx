@@ -13,6 +13,7 @@ import {
 import {
   getPinCooldownSeconds,
   resetPinWithPassword,
+  resolveStorageUserId,
   verifyPinCode,
 } from '../services/authService';
 import { AuthSession } from '../types/finance';
@@ -28,11 +29,12 @@ export const PinLockScreen: React.FC<PinLockScreenProps> = ({
   onUnlocked,
   onLogout,
 }) => {
+  const guardUserId = resolveStorageUserId(session) ?? session.userId;
   const [digits, setDigits] = useState('');
   const [verifying, setVerifying] = useState(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [cooldownSeconds, setCooldownSeconds] = useState<number>(() =>
-    getPinCooldownSeconds(session.userId)
+    getPinCooldownSeconds(guardUserId)
   );
 
   // Forgot PIN (password verification) mode
@@ -45,18 +47,18 @@ export const PinLockScreen: React.FC<PinLockScreenProps> = ({
   const [resetError, setResetError] = useState<string | null>(null);
 
   useEffect(() => {
-    setCooldownSeconds(getPinCooldownSeconds(session.userId));
+    setCooldownSeconds(getPinCooldownSeconds(guardUserId));
     const interval = window.setInterval(() => {
-      const rem = getPinCooldownSeconds(session.userId);
+      const rem = getPinCooldownSeconds(guardUserId);
       setCooldownSeconds(rem);
     }, 1000);
     return () => window.clearInterval(interval);
-  }, [session.userId]);
+  }, [guardUserId]);
 
   const submitPin = useCallback(
     async (pinValue: string) => {
       if (pinValue.length !== 6 || verifying) return;
-      const rem = getPinCooldownSeconds(session.userId);
+      const rem = getPinCooldownSeconds(guardUserId);
       if (rem > 0) {
         setCooldownSeconds(rem);
         setDigits('');

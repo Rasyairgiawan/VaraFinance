@@ -1,5 +1,6 @@
 import type { FinanceSnapshot } from '../engine/financeEngine';
-import type { Account, FinanceState, Transaction } from '../types/finance';
+import type { Account, Category, FinanceState, Transaction } from '../types/finance';
+import { matchesCategorySystemKey } from './systemEntityResolver';
 
 export function getTransactionAccountDisplay(tx: Transaction, accounts: Account[]): string {
   if (tx.affectsAccountBalance === false) {
@@ -226,13 +227,16 @@ export function getTransactionIncomeImpactLabel(tx: Transaction): string {
   return 'Tidak dihitung pendapatan';
 }
 
-export function getTransactionExpenseImpactLabel(tx: Transaction): string {
+export function getTransactionExpenseImpactLabel(
+  tx: Transaction,
+  categories: readonly Category[] = []
+): string {
   if (tx.isVoided) return 'Tidak berdampak (Void)';
   if (
     tx.type === 'expense' &&
     !tx.excludeFromExpenseStats &&
-    tx.categoryId !== 'cat-biz-ops' &&
-    tx.categoryId !== 'cat-debt'
+    !matchesCategorySystemKey(tx.categoryId, categories, 'business_ops', 'cat-biz-ops') &&
+    !matchesCategorySystemKey(tx.categoryId, categories, 'debt_payment', 'cat-debt')
   ) {
     return 'Menambah pengeluaran';
   }
@@ -303,7 +307,7 @@ export function buildFinanceCSVRows(state: FinanceState, snapshot: FinanceSnapsh
         escapeCSV(tx.amount),
         escapeCSV(getTransactionBalanceImpactLabel(tx)),
         escapeCSV(getTransactionIncomeImpactLabel(tx)),
-        escapeCSV(getTransactionExpenseImpactLabel(tx)),
+        escapeCSV(getTransactionExpenseImpactLabel(tx, state.categories)),
         escapeCSV(tx.isVoided ? 'Void' : 'Aktif'),
         escapeCSV(tx.overrideReason ?? ''),
       ].join(',')

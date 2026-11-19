@@ -171,6 +171,19 @@ Deno.serve(async (req: Request) => {
       });
 
       if (signInErr || !signInData.session || !signInData.user) {
+        const errMsg = signInErr?.message?.toLowerCase() ?? '';
+        const errCode = (signInErr as { code?: string } | null)?.code;
+        if (errCode === 'email_not_confirmed' || errMsg.includes('email not confirmed')) {
+          return jsonResponse(
+            {
+              error:
+                'Email akun Anda belum diverifikasi. Silakan periksa kotak masuk email untuk tautan konfirmasi.',
+              code: 'EMAIL_NOT_CONFIRMED',
+            },
+            403,
+            corsHeaders
+          );
+        }
         return jsonResponse({ error: 'Username atau password tidak sesuai.' }, 401, corsHeaders);
       }
 

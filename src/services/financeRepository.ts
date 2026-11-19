@@ -1,5 +1,10 @@
 import { createInitialFinanceState, DEFAULT_PROJECTION_ASSUMPTIONS } from '../data/initialProfile';
 import { isSupabaseConfigured, supabase } from '../lib/supabase';
+import {
+  createUuidInitialFinanceState,
+  migrateFinanceStateToUUID,
+  needsUuidMigration,
+} from './financeMigration';
 import { FinanceState, RecurringObligation } from '../types/finance';
 import { generateId, todayISO } from '../utils/format';
 
@@ -83,7 +88,20 @@ function deduplicateActiveObligations(list: RecurringObligation[]): RecurringObl
 }
 
 export function hydrateFinanceState(rawState: Partial<FinanceState>): FinanceState {
-  const base = createInitialFinanceState();
+  const isV3OrHigher = typeof rawState.schemaVersion === 'number' && rawState.schemaVersion >= 3;
+  const needsBaseFill =
+    !Array.isArray(rawState.obligations) ||
+    !Array.isArray(rawState.accounts) ||
+    rawState.accounts.length === 0 ||
+    !Array.isArray(rawState.categories) ||
+    rawState.categories.length === 0 ||
+    !Array.isArray(rawState.debts) ||
+    !Array.isArray(rawState.goals);
+  const base = needsBaseFill
+    ? isV3OrHigher
+      ? createUuidInitialFinanceState()
+      : createInitialFinanceState()
+    : createInitialFinanceState();
   const now = todayISO();
 
   const rawObs = Array.isArray(rawState.obligations)
@@ -101,6 +119,7 @@ export function hydrateFinanceState(rawState: Partial<FinanceState>): FinanceSta
     : base.obligations;
 
   return {
+    ...(typeof rawState.schemaVersion === 'number' ? { schemaVersion: rawState.schemaVersion } : {}),
     settings: {
       ...base.settings,
       ...(rawState.settings ?? {}),
@@ -291,7 +310,11 @@ export function parseAndValidateBackupJSON(jsonText: string): FinanceState {
     throw new Error('Berkas backup harus memiliki minimal 1 akun.');
   }
 
-  return hydrateFinanceState(candidate);
+  const normalizedCandidate = needsUuidMigration(candidate)
+    ? migrateFinanceStateToUUID(candidate, { saveBackup: false }).migratedState
+    : candidate;
+
+  return hydrateFinanceState(normalizedCandidate);
 }
 
 export function loadLocalState(userId?: string | null): FinanceState {
@@ -299,16 +322,23 @@ export function loadLocalState(userId?: string | null): FinanceState {
   try {
     const raw = localStorage.getItem(key);
     if (!raw) {
-      const initial = createInitialFinanceState();
+      const initial = createUuidInitialFinanceState();
       localStorage.setItem(key, JSON.stringify(initial));
       return initial;
     }
+
     const parsed = JSON.parse(raw) as Partial<FinanceState>;
-    const hydrated = hydrateFinanceState(parsed);
+    const normalized = needsUuidMigration(parsed)
+      ? migrateFinanceStateToUUID(parsed, { userId, saveBackup: true }).migratedState
+      : parsed;
+
+    const hydrated = hydrateFinanceState(normalized);
     localStorage.setItem(key, JSON.stringify(hydrated));
     return hydrated;
-  } catch {
-    return createInitialFinanceState();
+  } catch (err) {
+    console.error('Gagal memuat atau memigrasi state lokal:', err);
+    // Crash-safe: jangan pernah menghapus/menimpa key existing saat gagal parse/migrasi
+    return createUuidInitialFinanceState();
   }
 }
 
@@ -322,7 +352,7 @@ export function saveLocalState(state: FinanceState, userId?: string | null): voi
 }
 
 export function resetLocalState(userId?: string | null): FinanceState {
-  const initial = createInitialFinanceState();
+  const initial = createUuidInitialFinanceState();
   saveLocalState(initial, userId);
   return initial;
 }
